@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Planificador de Mesas a Escala - Adamil</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -13,7 +13,7 @@
       <div class="brand-icon">📐</div>
       <div>
         <h1>Distribuidor de Mesas a Escala</h1>
-        <span>Plano Adamil · Paso mínimo entre mesas: <strong>0,50 m</strong></span>
+        <span class="brand-subtitle">Plano Adamil · Paso mínimo entre mesas: <strong>0,50 m</strong></span>
       </div>
     </div>
 
@@ -22,33 +22,41 @@
         Mesas: <strong>0</strong>
       </div>
       <div class="stat-pill" id="statSeats">
-        Sillas aprox: <strong>0</strong>
+        Sillas: <strong>0</strong>
       </div>
       <div class="stat-pill status-ok" id="statStatus">
-        <span class="dot green"></span> Todas cumplen paso ≥ 0,50 m
+        <span class="dot green"></span> <span id="statStatusText">Todas cumplen paso ≥ 0,50 m</span>
       </div>
     </div>
 
     <div class="topbar-actions">
       <button class="btn" id="btnToggleRuler" title="Medir distancia libre entre dos puntos del plano">
-        📏 Regla
+        📏 <span class="btn-text">Regla</span>
       </button>
       <button class="btn" id="btnAutoDemo" title="Cargar ejemplo de distribución en el plano">
-        ✨ Ejemplo
+        ✨ <span class="btn-text">Ejemplo</span>
       </button>
       <button class="btn" id="btnExportImg" title="Imprimir o guardar en PDF">
-        🖨️ Imprimir
+        🖨️ <span class="btn-text">Imprimir</span>
       </button>
       <button class="btn btn-danger" id="btnClearAll" title="Borrar todas las mesas del plano">
-        🗑️ Vaciar
+        🗑️ <span class="btn-text">Vaciar</span>
       </button>
     </div>
   </header>
 
   <!-- Área Principal -->
   <main class="workspace">
+    <!-- Fondo oscuro para cerrar paneles en móvil -->
+    <div class="mobile-backdrop" id="mobileBackdrop"></div>
+
     <!-- Panel Izquierdo: Catálogo de Mesas y Opciones de Sillas -->
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebarLeft">
+      <div class="mobile-drawer-header">
+        <strong>➕ Añadir Mesas y Escala</strong>
+        <button class="btn btn-close-drawer" id="btnCloseLeftDrawer" type="button">✕ Cerrar</button>
+      </div>
+
       <!-- Configuración de Sillas (+0,5 m) -->
       <section class="panel-section">
         <div class="panel-title">
@@ -87,7 +95,7 @@
       <section class="panel-section">
         <div class="panel-title">
           <span>➕ Añadir Mesa a Escala</span>
-          <small style="text-transform: none; font-weight: 500;">Clic para insertar</small>
+          <small style="text-transform: none; font-weight: 500;">Toca para insertar</small>
         </div>
         <div class="catalog-list" id="catalogList">
           <!-- Se rellena dinámicamente desde app.js con las 6 mesas -->
@@ -95,7 +103,7 @@
       </section>
 
       <!-- Escala y Visualización del Plano -->
-      <section class="panel-section">
+      <section class="panel-section" id="scaleSection">
         <div class="panel-title">
           <span>📐 Medidas del Plano y Escala</span>
         </div>
@@ -168,17 +176,17 @@
       <div class="floating-legend">
         <div class="legend-item">
           <span class="dot green"></span>
-          <span><strong>Verde:</strong> Distancia entre mesas ≥ 0,50 m (Paso correcto)</span>
+          <span><strong>Verde:</strong> Paso ≥ 0,50 m</span>
         </div>
         <div class="legend-item">
           <span class="dot red"></span>
-          <span><strong>Rojo:</strong> Distancia entre mesas &lt; 0,50 m (Falta paso)</span>
+          <span><strong>Rojo:</strong> Paso &lt; 0,50 m</span>
         </div>
       </div>
 
       <!-- Banner de calibración o regla -->
       <div class="calibration-banner" id="modeBanner">
-        <span id="modeBannerText">Haz clic en el primer punto sobre el plano...</span>
+        <span id="modeBannerText">Toca el primer punto sobre el plano...</span>
         <button class="btn" id="btnCancelMode" style="padding: 3px 8px; font-size: 11px;">Cancelar</button>
       </div>
 
@@ -202,23 +210,37 @@
         </svg>
       </div>
 
+      <!-- Barra de acciones rápidas en móvil cuando hay una mesa seleccionada -->
+      <div class="mobile-quick-bar" id="mobileQuickBar">
+        <span class="quick-bar-title" id="quickBarTitle">M1</span>
+        <button class="btn" id="btnQuickChairs" type="button" title="Con/sin sillas (+0,5m)">🪑 Sillas</button>
+        <button class="btn" id="btnQuickRotate" type="button" title="Rotar +45°">↻ 45°</button>
+        <button class="btn" id="btnQuickDup" type="button" title="Duplicar mesa">📋</button>
+        <button class="btn btn-danger" id="btnQuickDel" type="button" title="Borrar mesa">🗑️</button>
+      </div>
+
       <!-- Controles de Zoom -->
       <div class="floating-toolbar">
         <button class="btn" id="btnZoomOut" title="Alejar">➖</button>
-        <span id="lblZoom" style="font-size: 12px; font-weight: 700; min-width: 48px; text-align: center;">100%</span>
+        <span id="lblZoom" style="font-size: 12px; font-weight: 700; min-width: 44px; text-align: center;">100%</span>
         <button class="btn" id="btnZoomIn" title="Acercar">➕</button>
-        <button class="btn" id="btnZoomFit" title="Ajustar plano a la pantalla">Ajustar</button>
+        <button class="btn" id="btnZoomFit" title="Centrar y ajustar plano">Ajustar</button>
       </div>
     </section>
 
     <!-- Panel Derecho: Inspector de Mesa Seleccionada y Listado -->
-    <aside class="sidebar-right">
+    <aside class="sidebar-right" id="sidebarRight">
+      <div class="mobile-drawer-header">
+        <strong>⚙️ Editar Mesa y Listado</strong>
+        <button class="btn btn-close-drawer" id="btnCloseRightDrawer" type="button">✕ Cerrar</button>
+      </div>
+
       <section class="panel-section">
         <div class="panel-title">
           <span>⚙️ Mesa Seleccionada</span>
         </div>
         <div id="inspectorEmpty" class="empty-state">
-          Haz clic sobre cualquier mesa en el plano para editar su rotación, sillas, etiqueta o posición.
+          Toca o haz clic sobre cualquier mesa en el plano para editar su rotación, sillas, etiqueta o posición.
         </div>
 
         <div id="inspectorContent" class="inspector-grid" style="display: none;">
@@ -275,7 +297,7 @@
 
           <div style="display: flex; gap: 8px; margin-top: 6px;">
             <button class="btn" id="btnDuplicateTable" style="flex: 1; justify-content: center;">
-              📋 Duplicar (D)
+              📋 Duplicar
             </button>
             <button class="btn btn-danger" id="btnDeleteTable" style="flex: 1; justify-content: center;">
               🗑️ Borrar
@@ -292,7 +314,7 @@
         </div>
         <div class="table-list-mini" id="tableListMini">
           <div class="empty-state" style="padding: 12px 4px;">
-            No hay mesas todavía. Pulsa en cualquiera de los 6 modelos de la izquierda para añadirla.
+            No hay mesas todavía. Pulsa en cualquiera de los 6 modelos para añadirla.
           </div>
         </div>
       </section>
@@ -300,19 +322,33 @@
       <!-- Ayuda rápida -->
       <section class="panel-section">
         <div class="panel-title">
-          <span>⌨️ Atajos Rápidos</span>
+          <span>💡 Controles</span>
         </div>
         <div style="font-size: 11.5px; color: var(--text-muted); line-height: 1.6;">
-          • <strong>Arrastrar:</strong> Mover mesa por el plano<br />
-          • <strong>Tecla R:</strong> Rotar mesa seleccionada +45°<br />
-          • <strong>Tecla S:</strong> Activar/desactivar sillas (+0,5 m)<br />
-          • <strong>Tecla D:</strong> Duplicar mesa seleccionada<br />
-          • <strong>Supr / Backspace:</strong> Eliminar mesa<br />
-          • <strong>Rueda del ratón:</strong> Zoom sobre el plano
+          • <strong>1 dedo en mesa:</strong> Mover mesa por el plano<br />
+          • <strong>1 dedo en fondo:</strong> Desplazar el plano<br />
+          • <strong>2 dedos (pellizcar):</strong> Zoom en móvil<br />
+          • <strong>Teclas R / S / D / Supr:</strong> Rotar, Sillas, Duplicar, Borrar
         </div>
       </section>
     </aside>
   </main>
+
+  <!-- Barra de navegación inferior para dispositivos móviles y tablets -->
+  <nav class="mobile-bottom-nav" id="mobileBottomNav">
+    <button class="mobile-nav-btn" id="btnNavAdd" type="button">
+      <span class="nav-icon">➕</span>
+      <span>Añadir Mesa</span>
+    </button>
+    <button class="mobile-nav-btn" id="btnNavInspect" type="button">
+      <span class="nav-icon">⚙️</span>
+      <span>Editar / Lista</span>
+    </button>
+    <button class="mobile-nav-btn" id="btnNavScale" type="button">
+      <span class="nav-icon">📐</span>
+      <span>Opciones Plano</span>
+    </button>
+  </nav>
 
   <script src="app.js"></script>
 </body>

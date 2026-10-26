@@ -1,5 +1,5 @@
 /**
- * Planificador de Mesas a Escala - Adamil
+ * Planificador de Mesas a Escala - Adamil (Responsive Desktop & Mobile)
  * Reglas:
  * 1. Mesa redonda grande: 2.0m diámetro
  * 2. Mesa redonda mediana: 1.8m diámetro
@@ -14,10 +14,6 @@
 const PLAN_WIDTH_PX = 734;
 const PLAN_HEIGHT_PX = 1024;
 
-// En el plano original (734x1024):
-// Sala Principal: ancho interior x=72..670 (598 px)
-// Ala Izquierda (54,55 m²): 162 px x 369 px -> 33.07 px/m (4.90m x 11.15m)
-// Ala Derecha (55,11 m²): 163 px x 369 px -> 33.07 px/m (4.93m x 11.15m)
 const DEFAULT_HALL_WIDTH_PX = 598;
 const DEFAULT_HALL_WIDTH_M = 18.08;
 const DEFAULT_PX_PER_M = DEFAULT_HALL_WIDTH_PX / DEFAULT_HALL_WIDTH_M; // ~33.075 px/m
@@ -84,8 +80,8 @@ const TABLE_CATALOG = [
 
 const state = {
   pxPerMeter: DEFAULT_PX_PER_M,
-  minClearance: 0.5, // 0,5 m mínimo entre mesas
-  chairExtraMeters: 0.5, // 0,5 m que ocupan las sillas
+  minClearance: 0.5,
+  chairExtraMeters: 0.5,
   chairMode: "total", // 'total' (+0.5m a las medidas) | 'per_side' (+0.5m por cada lado = +1.0m total)
   defaultAddChairs: true,
   showDimensions: true,
@@ -93,6 +89,8 @@ const state = {
   showClearanceHalo: false,
   cleanPlan: true,
   zoom: 0.85,
+  panX: 0,
+  panY: 0,
   tables: [],
   selectedId: null,
   nextCounter: 1,
@@ -147,6 +145,24 @@ const lblNearestDist = document.getElementById("lblNearestDist");
 const tableListMini = document.getElementById("tableListMini");
 const lblListCount = document.getElementById("lblListCount");
 
+// Mobile Drawers & Quick Bar DOM
+const sidebarLeft = document.getElementById("sidebarLeft");
+const sidebarRight = document.getElementById("sidebarRight");
+const mobileBackdrop = document.getElementById("mobileBackdrop");
+const btnNavAdd = document.getElementById("btnNavAdd");
+const btnNavInspect = document.getElementById("btnNavInspect");
+const btnNavScale = document.getElementById("btnNavScale");
+const mobileQuickBar = document.getElementById("mobileQuickBar");
+const quickBarTitle = document.getElementById("quickBarTitle");
+const btnQuickChairs = document.getElementById("btnQuickChairs");
+const btnQuickRotate = document.getElementById("btnQuickRotate");
+const btnQuickDup = document.getElementById("btnQuickDup");
+const btnQuickDel = document.getElementById("btnQuickDel");
+
+function isMobileViewport() {
+  return window.innerWidth <= 1024;
+}
+
 function fmtMeters(num) {
   return num.toFixed(2).replace(".", ",") + " m";
 }
@@ -155,9 +171,6 @@ function getCatalogSpec(typeId) {
   return TABLE_CATALOG.find((t) => t.typeId === typeId) || TABLE_CATALOG[0];
 }
 
-/**
- * Devuelve las dimensiones efectivas en metros de la mesa (incluyendo +0,5m si tiene sillas)
- */
 function getEffectiveDimensions(table) {
   const spec = getCatalogSpec(table.typeId);
   const extra = table.hasChairs
@@ -261,10 +274,6 @@ function polygonsOverlapSAT(cornersA, cornersB) {
   return true;
 }
 
-/**
- * Calcula la distancia mínima exacta (en metros) entre los bordes ocupados
- * de dos mesas A y B, y devuelve también los puntos más cercanos (pA, pB).
- */
 function computeTablePairDistanceMeters(tableA, tableB) {
   const ppm = state.pxPerMeter;
   const ax = tableA.x / ppm;
@@ -275,7 +284,6 @@ function computeTablePairDistanceMeters(tableA, tableB) {
   const dimA = getEffectiveDimensions(tableA);
   const dimB = getEffectiveDimensions(tableB);
 
-  // Caso 1: Círculo - Círculo
   if (dimA.shape === "circle" && dimB.shape === "circle") {
     const dx = bx - ax;
     const dy = by - ay;
@@ -288,7 +296,6 @@ function computeTablePairDistanceMeters(tableA, tableB) {
     return { distance: dist, pA, pB };
   }
 
-  // Caso 2: Círculo - Rectángulo (o viceversa)
   if (dimA.shape === "circle" && dimB.shape === "rect") {
     return circleToRectDistance(
       ax,
@@ -316,7 +323,6 @@ function computeTablePairDistanceMeters(tableA, tableB) {
     );
   }
 
-  // Caso 3: Rectángulo - Rectángulo
   const cornersA = getRectCornersMeters(
     ax,
     ay,
@@ -344,7 +350,6 @@ function computeTablePairDistanceMeters(tableA, tableB) {
   let bestPA = cornersA[0];
   let bestPB = cornersB[0];
 
-  // Vértices de A contra lados de B
   for (const p of cornersA) {
     for (let j = 0; j < 4; j++) {
       const b1 = cornersB[j];
@@ -359,7 +364,6 @@ function computeTablePairDistanceMeters(tableA, tableB) {
     }
   }
 
-  // Vértices de B contra lados de A
   for (const p of cornersB) {
     for (let i = 0; i < 4; i++) {
       const a1 = cornersA[i];
@@ -382,7 +386,6 @@ function circleToRectDistance(cx, cy, r, rx, ry, rl, rw, rAngleDeg, swapOrder) {
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
 
-  // Pasar centro del círculo al sistema local del rectángulo
   const dx = cx - rx;
   const dy = cy - ry;
   const localX = dx * cos + dy * sin;
@@ -395,7 +398,6 @@ function circleToRectDistance(cx, cy, r, rx, ry, rl, rw, rAngleDeg, swapOrder) {
 
   const inside = localX === clampedX && localY === clampedY;
 
-  // Punto más cercano en el rectángulo (en coordenadas globales)
   const rectPt = {
     x: rx + clampedX * cos - clampedY * sin,
     y: ry + clampedX * sin + clampedY * cos
@@ -417,13 +419,10 @@ function circleToRectDistance(cx, cy, r, rx, ry, rl, rw, rAngleDeg, swapOrder) {
     : { distance: dist, pA: circlePt, pB: rectPt };
 }
 
-/**
- * Evalúa todas las mesas y marca cuáles incumplen la distancia mínima (< 0,5 m)
- */
 function evaluateCollisions() {
   const n = state.tables.length;
   const conflicts = [];
-  const EPS = 0.001; // Tolerancia de 1 mm
+  const EPS = 0.001;
 
   for (const t of state.tables) {
     t.isConflict = false;
@@ -467,6 +466,57 @@ function evaluateCollisions() {
 }
 
 /* ==========================================================================
+   CAJONES MÓVILES (DRAWERS)
+   ========================================================================== */
+
+function closeMobileDrawers() {
+  sidebarLeft.classList.remove("drawer-open");
+  sidebarRight.classList.remove("drawer-open");
+  mobileBackdrop.classList.remove("open");
+  btnNavAdd.classList.remove("active");
+  btnNavInspect.classList.remove("active");
+  btnNavScale.classList.remove("active");
+}
+
+function openLeftDrawer(scrollToScale = false) {
+  const alreadyOpen = sidebarLeft.classList.contains("drawer-open");
+  closeMobileDrawers();
+  if (alreadyOpen && !scrollToScale && btnNavAdd.classList.contains("active")) {
+    return;
+  }
+  sidebarLeft.classList.add("drawer-open");
+  mobileBackdrop.classList.add("open");
+  if (scrollToScale) {
+    btnNavScale.classList.add("active");
+    const scaleEl = document.getElementById("scaleSection");
+    if (scaleEl) scaleEl.scrollIntoView({ behavior: "smooth" });
+  } else {
+    btnNavAdd.classList.add("active");
+    sidebarLeft.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+
+function openRightDrawer() {
+  const alreadyOpen = sidebarRight.classList.contains("drawer-open");
+  closeMobileDrawers();
+  if (alreadyOpen) return;
+  sidebarRight.classList.add("drawer-open");
+  mobileBackdrop.classList.add("open");
+  btnNavInspect.classList.add("active");
+}
+
+btnNavAdd.addEventListener("click", () => openLeftDrawer(false));
+btnNavScale.addEventListener("click", () => openLeftDrawer(true));
+btnNavInspect.addEventListener("click", openRightDrawer);
+mobileBackdrop.addEventListener("click", closeMobileDrawers);
+document
+  .getElementById("btnCloseLeftDrawer")
+  .addEventListener("click", closeMobileDrawers);
+document
+  .getElementById("btnCloseRightDrawer")
+  .addEventListener("click", closeMobileDrawers);
+
+/* ==========================================================================
    RENDERIZADO DEL CATÁLOGO Y DEL LIENZO SVG
    ========================================================================== */
 
@@ -506,25 +556,22 @@ function renderCatalog() {
 
     btn.addEventListener("click", () => {
       addTable(item.typeId);
+      if (isMobileViewport()) {
+        closeMobileDrawers();
+      }
     });
 
     catalogList.appendChild(btn);
   }
 }
 
-/**
- * Encuentra una posición libre en la Sala Principal al añadir una mesa nueva
- */
 function findSmartSpawnPosition(typeId, hasChairs) {
-  const ppm = state.pxPerMeter;
-  // Centro de la Sala Principal: x=371, y=380
   const candidates = [];
   for (let y = 260; y <= 520; y += 85) {
     for (let x = 150; x <= 590; x += 95) {
       candidates.push({ x, y });
     }
   }
-  // También alas inferiores
   for (let y = 660; y <= 910; y += 85) {
     candidates.push({ x: 155, y });
     candidates.push({ x: 585, y });
@@ -553,7 +600,6 @@ function findSmartSpawnPosition(typeId, hasChairs) {
     if (ok) return pt;
   }
 
-  // Si todo está lleno, desplazar ligeramente respecto al centro
   const offset = (state.tables.length % 7) * 18;
   return { x: 340 + offset, y: 350 + offset };
 }
@@ -631,10 +677,9 @@ function renderGridLayer() {
   if (!state.showGrid) return;
 
   const ppm = state.pxPerMeter;
-  const originX = 72; // Pared interior izquierda Sala Principal
-  const originY = 41; // Pared interior superior
+  const originX = 72;
+  const originY = 41;
 
-  // Líneas cada 1 metro y sub-líneas cada 0,5 metros
   const halfStep = ppm * 0.5;
   let svgHtml = "";
 
@@ -663,7 +708,7 @@ function drawDimensionLineSvg(x1, y1, x2, y2, label, color = "#1e293b") {
   const padW = label.length * 6.4 + 10;
 
   return `
-    <g class="dim-line" opacity="0.88">
+    <g class="dim-line" opacity="0.88" pointer-events="none">
       <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="1.4" stroke-dasharray="4 2" marker-start="url(#arrowStart)" marker-end="url(#arrowEnd)" />
       <g transform="translate(${mx}, ${my}) rotate(${textRot})">
         <rect x="${-padW / 2}" y="-9" width="${padW}" height="18" rx="4" fill="#ffffff" stroke="${color}" stroke-width="1" />
@@ -686,7 +731,6 @@ function renderDimensionsLayer() {
   const wingL = (964 - 595) / ppm;
 
   let html = "";
-  // Ancho cabecera superior
   html += drawDimensionLineSvg(
     184,
     62,
@@ -695,7 +739,6 @@ function renderDimensionsLayer() {
     `Cabecera: ${fmtMeters(stageW)}`,
     "#334155"
   );
-  // Ancho Sala Principal
   html += drawDimensionLineSvg(
     72,
     310,
@@ -704,7 +747,6 @@ function renderDimensionsLayer() {
     `Ancho Sala Principal: ${fmtMeters(hallW)} (288,11 m²)`,
     "#1e40af"
   );
-  // Largo Sala Principal
   html += drawDimensionLineSvg(
     102,
     180,
@@ -713,7 +755,6 @@ function renderDimensionsLayer() {
     `Largo: ${fmtMeters(hallL)}`,
     "#334155"
   );
-  // Ancho Ala Izquierda
   html += drawDimensionLineSvg(
     76,
     635,
@@ -722,7 +763,6 @@ function renderDimensionsLayer() {
     `Ala Izq: ${fmtMeters(leftWingW)} (54,55 m²)`,
     "#0f766e"
   );
-  // Largo Ala Izquierda
   html += drawDimensionLineSvg(
     96,
     595,
@@ -731,7 +771,6 @@ function renderDimensionsLayer() {
     `${fmtMeters(wingL)}`,
     "#0f766e"
   );
-  // Ancho Ala Derecha
   html += drawDimensionLineSvg(
     505,
     635,
@@ -744,9 +783,6 @@ function renderDimensionsLayer() {
   dimensionsLayer.innerHTML = html;
 }
 
-/**
- * Genera los iconos visuales de las sillas alrededor de una mesa
- */
 function buildChairsSvg(table, dim, ppm, strokeColor) {
   if (!table.hasChairs || table.seats <= 0) return "";
   const count = Math.min(30, Math.max(1, table.seats));
@@ -774,7 +810,6 @@ function buildChairsSvg(table, dim, ppm, strokeColor) {
       )})" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.9" />`;
     }
   } else {
-    // Distribuir sillas en los lados largos (y opcionalmente cabeceras si hay muchas sillas)
     const baseL = dim.baseLength * ppm;
     const baseW = dim.baseWidth * ppm;
     const useEnds = count >= 6 && baseW >= 0.85 * ppm;
@@ -784,7 +819,6 @@ function buildChairsSvg(table, dim, ppm, strokeColor) {
     const botCount = Math.floor(sideSeats / 2);
 
     const offsetOut = chairDepthPx * 0.55;
-    // Lado superior
     for (let i = 0; i < topCount; i++) {
       const x = -baseL / 2 + ((i + 0.5) / topCount) * baseL;
       const y = -baseW / 2 - offsetOut;
@@ -795,7 +829,6 @@ function buildChairsSvg(table, dim, ppm, strokeColor) {
         chairDepthPx * 0.7
       ).toFixed(1)}" rx="2.5" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.9" />`;
     }
-    // Lado inferior
     for (let i = 0; i < botCount; i++) {
       const x = -baseL / 2 + ((i + 0.5) / botCount) * baseL;
       const y = baseW / 2 + offsetOut;
@@ -806,7 +839,6 @@ function buildChairsSvg(table, dim, ppm, strokeColor) {
         chairDepthPx * 0.7
       ).toFixed(1)}" rx="2.5" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.9" />`;
     }
-    // Cabeceras izquierda y derecha
     if (useEnds) {
       const xLeft = -baseL / 2 - offsetOut;
       const xRight = baseL / 2 + offsetOut;
@@ -858,29 +890,24 @@ function renderTablesLayer() {
       const baseR = dim.baseRadius * ppm;
       const effR = dim.effRadius * ppm;
 
-      // Halo opcional de mitad de paso (0.25m alrededor de cada mesa)
       if (state.showClearanceHalo) {
         innerSvg += `<circle r="${(effR + halfClearancePx).toFixed(
           1
         )}" fill="none" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="2 3" opacity="0.55" />`;
       }
 
-      // Zona ocupada por sillas (+0,5m)
       if (table.hasChairs) {
         innerSvg += `<circle r="${effR.toFixed(
           1
         )}" fill="${chairZoneFill}" stroke="${strokeColor}" stroke-width="1.3" stroke-dasharray="4 2" />`;
       }
 
-      // Sillas individuales
       innerSvg += buildChairsSvg(table, dim, ppm, strokeColor);
 
-      // Tablero de la mesa a escala real
       innerSvg += `<circle r="${baseR.toFixed(
         1
       )}" fill="${fillColor}" stroke="${strokeColor}" stroke-width="2" />`;
 
-      // Contorno de selección
       if (isSelected) {
         innerSvg += `<circle class="selection-outline" r="${(effR + 4).toFixed(
           1
@@ -927,22 +954,24 @@ function renderTablesLayer() {
           1
         )}" height="${selW.toFixed(1)}" rx="6" fill="none" />`;
 
-        // Tirador de rotación para mesas rectangulares
-        const handleY = -effW / 2 - 18;
+        // Tirador de rotación más amplio para uso táctil en móvil
+        const handleY = -effW / 2 - 20;
         innerSvg += `
           <g class="rotate-handle" data-rotate-id="${table.id}">
             <line x1="0" y1="${(-effW / 2).toFixed(1)}" x2="0" y2="${handleY.toFixed(
           1
-        )}" stroke="#2563eb" stroke-width="1.8" />
+        )}" stroke="#2563eb" stroke-width="2" />
             <circle cx="0" cy="${handleY.toFixed(
               1
-            )}" r="5.5" fill="#2563eb" stroke="#ffffff" stroke-width="1.5" />
+            )}" r="12" fill="rgba(37, 99, 235, 0.15)" />
+            <circle cx="0" cy="${handleY.toFixed(
+              1
+            )}" r="6.5" fill="#2563eb" stroke="#ffffff" stroke-width="1.5" />
           </g>
         `;
       }
     }
 
-    // Etiqueta de la mesa y dimensión ocupada
     const dimText =
       dim.shape === "circle"
         ? `Ø${dim.effDiameter.toFixed(1).replace(".", ",")}m`
@@ -969,7 +998,6 @@ function renderConflictsLayer(conflicts) {
   const ppm = state.pxPerMeter;
   let html = "";
 
-  // Dibujar todas las violaciones de distancia (< 0,5 m) en rojo
   for (const c of conflicts) {
     const x1 = c.pA.x * ppm;
     const y1 = c.pA.y * ppm;
@@ -1004,7 +1032,6 @@ function renderConflictsLayer(conflicts) {
     `;
   }
 
-  // Si la mesa seleccionada está en VERDE y tiene otra mesa cercana, mostrar su distancia en verde
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (
     sel &&
@@ -1072,7 +1099,7 @@ function renderToolOverlay() {
    PANEL INSPECTOR Y ESTADÍSTICAS SUPERIORES
    ========================================================================== */
 
-function updateStatsAndInspector(conflicts) {
+function updateStatsAndInspector() {
   const totalTables = state.tables.length;
   const totalSeats = state.tables.reduce(
     (acc, t) => acc + (t.hasChairs ? Number(t.seats) || 0 : 0),
@@ -1080,36 +1107,41 @@ function updateStatsAndInspector(conflicts) {
   );
 
   statTables.innerHTML = `Mesas: <strong>${totalTables}</strong>`;
-  statSeats.innerHTML = `Sillas aprox: <strong>${totalSeats}</strong>`;
+  statSeats.innerHTML = `Sillas: <strong>${totalSeats}</strong>`;
 
   const conflictTablesCount = state.tables.filter((t) => t.isConflict).length;
   if (conflictTablesCount === 0) {
     statStatus.className = "stat-pill status-ok";
-    statStatus.innerHTML = `<span class="dot green"></span> Todas en verde (Paso ≥ ${fmtMeters(
+    statStatus.innerHTML = `<span class="dot green"></span> <span>Paso ≥ ${fmtMeters(
       state.minClearance
-    )})`;
+    )} OK</span>`;
   } else {
     statStatus.className = "stat-pill status-conflict";
-    statStatus.innerHTML = `<span class="dot red"></span> ${conflictTablesCount} mesa(s) en rojo (< ${fmtMeters(
+    statStatus.innerHTML = `<span class="dot red"></span> <span>${conflictTablesCount} en rojo (&lt; ${fmtMeters(
       state.minClearance
-    )})`;
+    )})</span>`;
   }
 
   lblScaleInfo.textContent = `${state.pxPerMeter
     .toFixed(2)
     .replace(".", ",")} px/m`;
 
-  // Inspector de mesa seleccionada
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (!sel) {
     inspectorEmpty.style.display = "block";
     inspectorContent.style.display = "none";
+    mobileQuickBar.classList.remove("visible");
   } else {
     inspectorEmpty.style.display = "none";
     inspectorContent.style.display = "flex";
+    mobileQuickBar.classList.add("visible");
 
     const spec = getCatalogSpec(sel.typeId);
     const dim = getEffectiveDimensions(sel);
+
+    quickBarTitle.textContent = sel.name;
+    btnQuickChairs.classList.toggle("active", !!sel.hasChairs);
+    btnQuickRotate.style.display = dim.shape === "rect" ? "inline-flex" : "none";
 
     if (document.activeElement !== inpTableName) {
       inpTableName.value = sel.name;
@@ -1153,10 +1185,9 @@ function updateStatsAndInspector(conflicts) {
     }
   }
 
-  // Lista miniatura de mesas
   lblListCount.textContent = String(totalTables);
   if (totalTables === 0) {
-    tableListMini.innerHTML = `<div class="empty-state" style="padding: 12px 4px;">No hay mesas todavía. Pulsa en cualquiera de los 6 modelos de la izquierda para añadirla.</div>`;
+    tableListMini.innerHTML = `<div class="empty-state" style="padding: 12px 4px;">No hay mesas todavía. Pulsa en cualquiera de los 6 modelos para añadirla.</div>`;
   } else {
     tableListMini.innerHTML = "";
     for (const t of state.tables) {
@@ -1189,12 +1220,19 @@ function renderAll() {
   renderTablesLayer();
   renderConflictsLayer(conflicts);
   renderToolOverlay();
-  updateStatsAndInspector(conflicts);
+  updateStatsAndInspector();
 }
 
 /* ==========================================================================
-   INTERACCIÓN EN EL LIENZO: ARRASTRAR, ROTAR, CALIBRAR Y REGLA
+   INTERACCIÓN EN EL LIENZO: RATÓN + TÁCTIL (MOVER, ROTAR, PAN Y PINCH-ZOOM)
    ========================================================================== */
+
+function updateStageTransform() {
+  canvasStage.style.transform = `translate(${state.panX.toFixed(
+    1
+  )}px, ${state.panY.toFixed(1)}px) scale(${state.zoom})`;
+  lblZoom.textContent = `${Math.round(state.zoom * 100)}%`;
+}
 
 function clientToSvgCoords(clientX, clientY) {
   const rect = planSvg.getBoundingClientRect();
@@ -1207,15 +1245,37 @@ function clientToSvgCoords(clientX, clientY) {
 }
 
 let dragState = null;
+const activePointers = new Map();
+let pinchStartDist = null;
+let pinchStartZoom = null;
 
-planSvg.addEventListener("pointerdown", (e) => {
+canvasWrapper.addEventListener("pointerdown", (e) => {
+  if (
+    e.target.closest(".floating-toolbar") ||
+    e.target.closest(".mobile-quick-bar") ||
+    e.target.closest(".calibration-banner")
+  ) {
+    return;
+  }
+
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  // Si hay 2 dedos en pantalla -> iniciar gesto de pellizco (pinch-to-zoom)
+  if (activePointers.size === 2) {
+    dragState = null;
+    const pts = Array.from(activePointers.values());
+    pinchStartDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    pinchStartZoom = state.zoom;
+    return;
+  }
+
   const pt = clientToSvgCoords(e.clientX, e.clientY);
 
   // Modo calibración o regla
   if (state.interactionMode === "calibrate" || state.interactionMode === "ruler") {
     state.toolPoints.push(pt);
     if (state.toolPoints.length === 1) {
-      modeBannerText.textContent = "Ahora haz clic en el segundo punto sobre el plano...";
+      modeBannerText.textContent = "Ahora toca el segundo punto sobre el plano...";
       state.rulerLine = { x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y };
       renderToolOverlay();
     } else if (state.toolPoints.length === 2) {
@@ -1247,7 +1307,7 @@ planSvg.addEventListener("pointerdown", (e) => {
     return;
   }
 
-  // Comprobar si se pulsó el tirador de rotación
+  // Tirador de rotación
   const rotateGroup = e.target.closest("[data-rotate-id]");
   if (rotateGroup) {
     const id = rotateGroup.dataset.rotateId;
@@ -1257,15 +1317,16 @@ planSvg.addEventListener("pointerdown", (e) => {
       state.selectedId = id;
       dragState = {
         type: "rotate",
+        pointerId: e.pointerId,
         table
       };
-      planSvg.setPointerCapture(e.pointerId);
+      canvasWrapper.setPointerCapture(e.pointerId);
       renderAll();
       return;
     }
   }
 
-  // Comprobar si se pulsó una mesa
+  // Tocar/arrastrar una mesa
   const tableGroup = e.target.closest(".table-group");
   if (tableGroup) {
     const id = tableGroup.dataset.id;
@@ -1274,23 +1335,44 @@ planSvg.addEventListener("pointerdown", (e) => {
       state.selectedId = id;
       dragState = {
         type: "move",
+        pointerId: e.pointerId,
         table,
         offsetX: pt.x - table.x,
         offsetY: pt.y - table.y
       };
-      planSvg.setPointerCapture(e.pointerId);
+      canvasWrapper.setPointerCapture(e.pointerId);
       renderAll();
       return;
     }
   }
 
-  // Clic en fondo vacío -> deseleccionar
-  state.selectedId = null;
-  state.rulerLine = null;
-  renderAll();
+  // Tocar en el fondo vacío -> permitir desplazar el plano (pan) y deseleccionar si es un toque corto
+  dragState = {
+    type: "pan",
+    pointerId: e.pointerId,
+    startX: e.clientX,
+    startY: e.clientY,
+    origPanX: state.panX,
+    origPanY: state.panY,
+    moved: false
+  };
+  canvasWrapper.setPointerCapture(e.pointerId);
 });
 
-planSvg.addEventListener("pointermove", (e) => {
+canvasWrapper.addEventListener("pointermove", (e) => {
+  if (activePointers.has(e.pointerId)) {
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  }
+
+  // Gesto de pellizco con 2 dedos
+  if (activePointers.size === 2 && pinchStartDist > 10) {
+    const pts = Array.from(activePointers.values());
+    const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    const scaleFactor = dist / pinchStartDist;
+    applyZoom(pinchStartZoom * scaleFactor);
+    return;
+  }
+
   const pt = clientToSvgCoords(e.clientX, e.clientY);
 
   if (
@@ -1303,7 +1385,7 @@ planSvg.addEventListener("pointermove", (e) => {
     return;
   }
 
-  if (!dragState) return;
+  if (!dragState || dragState.pointerId !== e.pointerId) return;
 
   if (dragState.type === "move") {
     dragState.table.x = Math.max(
@@ -1320,20 +1402,42 @@ planSvg.addEventListener("pointermove", (e) => {
     const dy = pt.y - dragState.table.y;
     let deg = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
     deg = ((deg % 180) + 180) % 180;
-    // Imán suave cada 15° si se acerca a menos de 3°
     const snap15 = Math.round(deg / 15) * 15;
     if (Math.abs(deg - snap15) < 3) deg = snap15 % 180;
     dragState.table.rotation = deg;
     renderAll();
+  } else if (dragState.type === "pan") {
+    const dx = e.clientX - dragState.startX;
+    const dy = e.clientY - dragState.startY;
+    if (Math.hypot(dx, dy) > 4) {
+      dragState.moved = true;
+    }
+    state.panX = dragState.origPanX + dx;
+    state.panY = dragState.origPanY + dy;
+    updateStageTransform();
   }
 });
 
-planSvg.addEventListener("pointerup", () => {
-  if (dragState) {
-    dragState = null;
-    saveToLocalStorage();
+function handlePointerUpOrCancel(e) {
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) {
+    pinchStartDist = null;
   }
-});
+
+  if (dragState && dragState.pointerId === e.pointerId) {
+    if (dragState.type === "pan" && !dragState.moved) {
+      state.selectedId = null;
+      state.rulerLine = null;
+      renderAll();
+    } else if (dragState.type === "move" || dragState.type === "rotate") {
+      saveToLocalStorage();
+    }
+    dragState = null;
+  }
+}
+
+canvasWrapper.addEventListener("pointerup", handlePointerUpOrCancel);
+canvasWrapper.addEventListener("pointercancel", handlePointerUpOrCancel);
 
 /* ==========================================================================
    CONTROLES DE INTERFAZ Y EVENTOS
@@ -1351,13 +1455,15 @@ function setInteractionMode(mode) {
   if (mode === "normal") {
     modeBanner.classList.remove("visible");
   } else if (mode === "calibrate") {
+    closeMobileDrawers();
     modeBanner.classList.add("visible");
     modeBannerText.textContent =
-      "Calibrar escala: Haz clic en el primer extremo de una pared conocida...";
+      "Calibrar: Toca el primer extremo de una pared conocida...";
   } else if (mode === "ruler") {
+    closeMobileDrawers();
     modeBanner.classList.add("visible");
     modeBannerText.textContent =
-      "Regla: Haz clic en dos puntos del plano para medir su distancia en metros...";
+      "Regla: Toca dos puntos del plano para medir su distancia...";
   }
 }
 
@@ -1454,7 +1560,7 @@ document.getElementById("btnResetScale").addEventListener("click", () => {
   renderAll();
 });
 
-// Controles del Inspector
+// Controles del Inspector y Barra Rápida Móvil
 inpTableName.addEventListener("input", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel) {
@@ -1509,6 +1615,28 @@ document
   .getElementById("btnDeleteTable")
   .addEventListener("click", deleteSelectedTable);
 
+// Botones de la barra rápida móvil
+btnQuickChairs.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  if (sel) {
+    sel.hasChairs = !sel.hasChairs;
+    saveToLocalStorage();
+    renderAll();
+  }
+});
+
+btnQuickRotate.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  if (sel) {
+    sel.rotation = ((sel.rotation || 0) + 45) % 180;
+    saveToLocalStorage();
+    renderAll();
+  }
+});
+
+btnQuickDup.addEventListener("click", duplicateSelectedTable);
+btnQuickDel.addEventListener("click", deleteSelectedTable);
+
 // Botones de barra superior
 document.getElementById("btnClearAll").addEventListener("click", () => {
   if (state.tables.length === 0) return;
@@ -1531,15 +1659,17 @@ document.getElementById("btnExportImg").addEventListener("click", () => {
 
 // Zoom
 function applyZoom(newZoom) {
-  state.zoom = Math.max(0.35, Math.min(2.2, newZoom));
-  canvasStage.style.transform = `scale(${state.zoom})`;
-  lblZoom.textContent = `${Math.round(state.zoom * 100)}%`;
+  state.zoom = Math.max(0.3, Math.min(2.4, newZoom));
+  updateStageTransform();
 }
 
 function fitPlanToViewport() {
   const rect = canvasWrapper.getBoundingClientRect();
-  const scaleX = (rect.width - 40) / PLAN_WIDTH_PX;
-  const scaleY = (rect.height - 40) / PLAN_HEIGHT_PX;
+  const pad = isMobileViewport() ? 16 : 40;
+  const scaleX = (rect.width - pad) / PLAN_WIDTH_PX;
+  const scaleY = (rect.height - pad) / PLAN_HEIGHT_PX;
+  state.panX = 0;
+  state.panY = 0;
   applyZoom(Math.min(scaleX, scaleY, 1.15));
 }
 
@@ -1612,9 +1742,7 @@ function saveToLocalStorage() {
       tables: state.tables
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  } catch (_) {
-    // Ignorar errores de almacenamiento privado
-  }
+  } catch (_) {}
 }
 
 function loadFromLocalStorage() {
@@ -1645,8 +1773,6 @@ function loadSampleLayout() {
   state.tables = [];
   state.nextCounter = 1;
 
-  // Mesas en Sala Principal (combinación de los 6 tipos solicitados)
-  // Presidencia arriba en el escenario
   addTable("rect_xl", {
     name: "Presidencia",
     x: 371,
@@ -1656,7 +1782,6 @@ function loadSampleLayout() {
     seats: 8
   });
 
-  // 2 filas de mesas redondas grandes (2m) y medianas (1.8m)
   addTable("round_lg", { name: "M1", x: 185, y: 270, hasChairs: true });
   addTable("round_lg", { name: "M2", x: 371, y: 270, hasChairs: true });
   addTable("round_lg", { name: "M3", x: 555, y: 270, hasChairs: true });
@@ -1665,11 +1790,9 @@ function loadSampleLayout() {
   addTable("round_md", { name: "M5", x: 371, y: 410, hasChairs: true });
   addTable("round_md", { name: "M6", x: 555, y: 410, hasChairs: true });
 
-  // Mesas redondas pequeñas (1.2m)
   addTable("round_sm", { name: "M7", x: 260, y: 525, hasChairs: true });
   addTable("round_sm", { name: "M8", x: 480, y: 525, hasChairs: true });
 
-  // Las 2 mesas rectangulares en la parte inferior de las Alas Izquierda y Derecha (como en el plano original)
   addTable("rect_lg", {
     name: "Mesa Izq",
     x: 155,
@@ -1702,4 +1825,9 @@ window.addEventListener("DOMContentLoaded", () => {
   setTimeout(fitPlanToViewport, 60);
 });
 
-window.addEventListener("resize", fitPlanToViewport);
+window.addEventListener("resize", () => {
+  if (!isMobileViewport()) {
+    closeMobileDrawers();
+  }
+  fitPlanToViewport();
+});
