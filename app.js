@@ -1228,9 +1228,9 @@ function renderAll() {
    ========================================================================== */
 
 function updateStageTransform() {
-  canvasStage.style.transform = `translate(${state.panX.toFixed(
+  canvasStage.style.transform = `translate(calc(-50% + ${state.panX.toFixed(
     1
-  )}px, ${state.panY.toFixed(1)}px) scale(${state.zoom})`;
+  )}px), calc(-50% + ${state.panY.toFixed(1)}px)) scale(${state.zoom})`;
   lblZoom.textContent = `${Math.round(state.zoom * 100)}%`;
 }
 
@@ -1659,15 +1659,17 @@ document.getElementById("btnExportImg").addEventListener("click", () => {
 
 // Zoom
 function applyZoom(newZoom) {
-  state.zoom = Math.max(0.3, Math.min(2.4, newZoom));
+  state.zoom = Math.max(0.2, Math.min(2.6, newZoom));
   updateStageTransform();
 }
 
 function fitPlanToViewport() {
   const rect = canvasWrapper.getBoundingClientRect();
-  const pad = isMobileViewport() ? 16 : 40;
-  const scaleX = (rect.width - pad) / PLAN_WIDTH_PX;
-  const scaleY = (rect.height - pad) / PLAN_HEIGHT_PX;
+  if (rect.width < 20 || rect.height < 20) return;
+  const padX = isMobileViewport() ? 12 : 40;
+  const padY = isMobileViewport() ? 64 : 40;
+  const scaleX = (rect.width - padX) / PLAN_WIDTH_PX;
+  const scaleY = (rect.height - padY) / PLAN_HEIGHT_PX;
   state.panX = 0;
   state.panY = 0;
   applyZoom(Math.min(scaleX, scaleY, 1.15));
@@ -1822,8 +1824,15 @@ window.addEventListener("DOMContentLoaded", () => {
   } else {
     renderAll();
   }
-  setTimeout(fitPlanToViewport, 60);
+  fitPlanToViewport();
+  requestAnimationFrame(fitPlanToViewport);
+  setTimeout(fitPlanToViewport, 120);
 });
+
+planImage.addEventListener("load", fitPlanToViewport);
+window.addEventListener("orientationchange", () =>
+  setTimeout(fitPlanToViewport, 150)
+);
 
 window.addEventListener("resize", () => {
   if (!isMobileViewport()) {

@@ -24,30 +24,38 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+html,
+body {
+  width: 100%;
+  max-width: 100vw;
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  position: fixed;
+  inset: 0;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg-app);
   color: var(--text-main);
-  height: 100vh;
-  height: 100dvh;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
   user-select: none;
 }
 
 /* Header */
 .topbar {
-  min-height: 58px;
+  min-height: 54px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border-color);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 16px;
+  padding: 6px 14px;
   box-shadow: var(--shadow-sm);
   z-index: 20;
-  gap: 10px;
+  gap: 8px;
   flex-shrink: 0;
 }
 
@@ -59,8 +67,8 @@ body {
 }
 
 .brand-icon {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
   background: var(--primary);
   color: #fff;
@@ -73,7 +81,7 @@ body {
 }
 
 .brand h1 {
-  font-size: 15.5px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--text-main);
   white-space: nowrap;
@@ -98,7 +106,7 @@ body {
   background: #f8fafc;
   border: 1px solid var(--border-color);
   border-radius: 999px;
-  padding: 5px 11px;
+  padding: 4px 10px;
   font-size: 12px;
   font-weight: 600;
   display: flex;
@@ -184,8 +192,10 @@ body {
 /* Main Workspace */
 .workspace {
   flex: 1;
+  min-height: 0;
+  min-width: 0;
   display: grid;
-  grid-template-columns: 330px 1fr 300px;
+  grid-template-columns: 330px minmax(0, 1fr) 300px;
   overflow: hidden;
   position: relative;
 }
@@ -373,20 +383,26 @@ input[type="range"] {
   margin-top: 8px;
 }
 
-/* Canvas Viewport */
+/* Canvas Viewport - position:absolute en canvas-stage evita que 734x1024 desborde el móvil */
 .canvas-wrapper {
   position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
   background: #e2e8f0;
   overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   touch-action: none;
 }
 
 .canvas-stage {
-  position: relative;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 734px;
+  height: 1024px;
   transform-origin: center center;
+  transform: translate(-50%, -50%) scale(0.5);
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
   background: #ffffff;
   line-height: 0;
@@ -414,8 +430,8 @@ input[type="range"] {
 /* Floating Zoom & Legend Controls */
 .floating-toolbar {
   position: absolute;
-  bottom: 14px;
-  left: 14px;
+  bottom: 12px;
+  left: 12px;
   background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(6px);
   border: 1px solid var(--border-color);
@@ -430,17 +446,17 @@ input[type="range"] {
 
 .floating-legend {
   position: absolute;
-  top: 12px;
-  left: 12px;
-  background: rgba(255, 255, 255, 0.94);
+  top: 10px;
+  left: 10px;
+  background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(6px);
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  padding: 7px 11px;
-  font-size: 11.5px;
+  padding: 6px 10px;
+  font-size: 11px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   box-shadow: var(--shadow-sm);
   z-index: 10;
   pointer-events: none;
@@ -455,14 +471,14 @@ input[type="range"] {
 
 .calibration-banner {
   position: absolute;
-  top: 12px;
+  top: 10px;
   left: 50%;
   transform: translateX(-50%);
   background: #1e293b;
   color: #ffffff;
   padding: 8px 14px;
   border-radius: 999px;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   box-shadow: var(--shadow-md);
   z-index: 15;
@@ -572,8 +588,9 @@ input[type="range"] {
 @media (max-width: 1024px) {
   .topbar {
     flex-wrap: wrap;
-    padding: 8px 10px;
-    gap: 6px;
+    padding: 6px 10px;
+    gap: 4px;
+    min-height: auto;
   }
 
   .brand-subtitle {
@@ -581,13 +598,13 @@ input[type="range"] {
   }
 
   .brand h1 {
-    font-size: 14px;
+    font-size: 13.5px;
   }
 
   .brand-icon {
-    width: 28px;
-    height: 28px;
-    font-size: 14px;
+    width: 26px;
+    height: 26px;
+    font-size: 13px;
   }
 
   .topbar-actions .btn-text {
@@ -595,7 +612,8 @@ input[type="range"] {
   }
 
   .topbar-actions .btn {
-    padding: 6px 9px;
+    padding: 5px 8px;
+    font-size: 12px;
   }
 
   .stats-bar {
@@ -606,19 +624,23 @@ input[type="range"] {
   }
 
   .stat-pill {
-    font-size: 11px;
-    padding: 3px 8px;
+    font-size: 10.5px;
+    padding: 2px 7px;
   }
 
   .workspace {
-    display: flex;
-    flex-direction: column;
+    display: block;
     flex: 1;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
     position: relative;
+    overflow: hidden;
   }
 
   .canvas-wrapper {
-    flex: 1;
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
   }
@@ -642,8 +664,8 @@ input[type="range"] {
     position: fixed;
     left: 0;
     right: 0;
-    bottom: 58px;
-    max-height: 76dvh;
+    bottom: 56px;
+    max-height: 75dvh;
     border: none;
     border-top: 1px solid var(--border-color);
     border-radius: 16px 16px 0 0;
@@ -684,14 +706,14 @@ input[type="range"] {
   .mobile-quick-bar.visible {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     position: absolute;
-    bottom: 58px;
+    bottom: 54px;
     left: 50%;
     transform: translateX(-50%);
     background: rgba(15, 23, 42, 0.94);
     color: #fff;
-    padding: 6px 10px;
+    padding: 5px 9px;
     border-radius: 999px;
     box-shadow: var(--shadow-md);
     z-index: 15;
@@ -702,34 +724,40 @@ input[type="range"] {
   .quick-bar-title {
     font-size: 12px;
     font-weight: 700;
-    padding: 0 6px;
+    padding: 0 5px;
     color: #93c5fd;
   }
 
   .mobile-quick-bar .btn {
-    padding: 6px 10px;
-    font-size: 12px;
+    padding: 5px 9px;
+    font-size: 11.5px;
     border-radius: 999px;
   }
 
   .floating-toolbar {
-    bottom: 10px;
+    bottom: 8px;
     left: 50%;
     transform: translateX(-50%);
+    padding: 4px;
+  }
+
+  .floating-toolbar .btn {
+    padding: 5px 8px;
+    font-size: 11.5px;
   }
 
   .floating-legend {
-    top: 8px;
-    left: 8px;
-    padding: 5px 8px;
-    font-size: 10.5px;
+    top: 6px;
+    left: 6px;
+    padding: 4px 7px;
+    font-size: 10px;
   }
 
   /* Barra de navegación inferior fija en móvil */
   .mobile-bottom-nav {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    height: 58px;
+    height: 56px;
     background: var(--bg-panel);
     border-top: 1px solid var(--border-color);
     z-index: 45;
@@ -751,7 +779,7 @@ input[type="range"] {
   }
 
   .mobile-nav-btn .nav-icon {
-    font-size: 16px;
+    font-size: 15px;
   }
 
   .mobile-nav-btn.active {
@@ -761,6 +789,12 @@ input[type="range"] {
 }
 
 @media print {
+  html,
+  body {
+    position: static;
+    height: auto;
+    overflow: visible;
+  }
   .topbar,
   .sidebar,
   .sidebar-right,
@@ -775,9 +809,13 @@ input[type="range"] {
     display: block;
   }
   .canvas-wrapper {
+    position: static;
     background: #fff;
   }
   .canvas-stage {
+    position: relative;
+    top: 0;
+    left: 0;
     box-shadow: none;
     transform: none !important;
   }
