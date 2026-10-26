@@ -1,12 +1,13 @@
 /**
- * Planificador de Mesas a Escala - Adamil (Responsive Desktop & Mobile con SVG viewBox nativo)
+ * Planificador de Mesas a Escala - Adamil
  * Reglas:
- * 1. Mesa redonda grande: 2.0m diámetro
- * 2. Mesa redonda mediana: 1.8m diámetro
- * 3. Mesa redonda pequeña: 1.2m diámetro
- * 4. Mesa rectangular pequeña: 1.8m largo x 0.75m ancho
- * 5. Mesa rectangular grande: 2.0m largo x 0.90m ancho
- * 6. Mesa rectangular extra ancha: 1.8m largo x 1.20m ancho
+ * 1. Mesa redonda grande: 2.0m diámetro · Máx 13 sillas
+ * 2. Mesa redonda mediana: 1.8m diámetro · Máx 11 sillas
+ * 3. Mesa redonda pequeña: 1.2m diámetro · Máx 4 sillas
+ * 4. Mesa rectangular pequeña: 1.8m × 0.75m · Máx 3 sillas por largo
+ * 5. Mesa rectangular grande: 2.0m × 0.90m · Máx 3 sillas por largo
+ * 6. Mesa rectangular extra ancha: 1.8m × 1.20m · Máx 3 sillas por largo
+ * - Unión de mesas rectangulares: permite unir N mesas para hacerlas más largas (7 sillas por largo cada 2 mesas)
  * - Opción de sillas: suma 0.5m a las medidas de las mesas
  * - Distancia mínima entre mesas: 0.5m (Verde si >= 0.5m, Rojo si < 0.5m)
  */
@@ -25,8 +26,9 @@ const TABLE_CATALOG = [
     name: "1. Mesa redonda grande",
     shape: "circle",
     diameter: 2.0,
-    defaultSeats: 10,
-    desc: "Ø 2,00 m de diámetro"
+    maxSeats: 13,
+    defaultSeats: 13,
+    desc: "Ø 2,00 m · Máx. 13 sillas"
   },
   {
     typeId: "round_md",
@@ -34,8 +36,9 @@ const TABLE_CATALOG = [
     name: "2. Mesa redonda mediana",
     shape: "circle",
     diameter: 1.8,
-    defaultSeats: 8,
-    desc: "Ø 1,80 m de diámetro"
+    maxSeats: 11,
+    defaultSeats: 11,
+    desc: "Ø 1,80 m · Máx. 11 sillas"
   },
   {
     typeId: "round_sm",
@@ -43,8 +46,9 @@ const TABLE_CATALOG = [
     name: "3. Mesa redonda pequeña",
     shape: "circle",
     diameter: 1.2,
-    defaultSeats: 6,
-    desc: "Ø 1,20 m de diámetro"
+    maxSeats: 4,
+    defaultSeats: 4,
+    desc: "Ø 1,20 m · Máx. 4 sillas"
   },
   {
     typeId: "rect_sm",
@@ -53,8 +57,9 @@ const TABLE_CATALOG = [
     shape: "rect",
     length: 1.8,
     width: 0.75,
+    maxSeatsPerSide: 3,
     defaultSeats: 6,
-    desc: "1,80 m largo × 0,75 m ancho"
+    desc: "1,80 × 0,75 m · Máx. 3 sillas/largo"
   },
   {
     typeId: "rect_lg",
@@ -63,8 +68,9 @@ const TABLE_CATALOG = [
     shape: "rect",
     length: 2.0,
     width: 0.9,
-    defaultSeats: 8,
-    desc: "2,00 m largo × 0,90 m ancho"
+    maxSeatsPerSide: 3,
+    defaultSeats: 6,
+    desc: "2,00 × 0,90 m · Máx. 3 sillas/largo"
   },
   {
     typeId: "rect_xl",
@@ -73,8 +79,9 @@ const TABLE_CATALOG = [
     shape: "rect",
     length: 1.8,
     width: 1.2,
-    defaultSeats: 8,
-    desc: "1,80 m largo × 1,20 m ancho"
+    maxSeatsPerSide: 3,
+    defaultSeats: 6,
+    desc: "1,80 × 1,20 m · Máx. 3 sillas/largo"
   }
 ];
 
@@ -88,13 +95,13 @@ const state = {
   showGrid: true,
   showClearanceHalo: false,
   cleanPlan: true,
-  zoom: 1.0, // 1.0 = encaje completo automático en viewBox 0 0 734 1024
-  panX: 0, // Desplazamiento en unidades SVG (0..734)
-  panY: 0, // Desplazamiento en unidades SVG (0..1024)
+  zoom: 1.0,
+  panX: 0,
+  panY: 0,
   tables: [],
   selectedId: null,
   nextCounter: 1,
-  interactionMode: "normal", // 'normal' | 'calibrate' | 'ruler'
+  interactionMode: "normal",
   toolPoints: [],
   rulerLine: null
 };
@@ -136,7 +143,24 @@ const lblTableType = document.getElementById("lblTableType");
 const lblTableBaseDim = document.getElementById("lblTableBaseDim");
 const lblTableEffDim = document.getElementById("lblTableEffDim");
 const chkTableChairs = document.getElementById("chkTableChairs");
+
+// Controles específicos de sillas y unión
+const rectJoinControls = document.getElementById("rectJoinControls");
+const lblJoinedCount = document.getElementById("lblJoinedCount");
+const btnJoinRect = document.getElementById("btnJoinRect");
+const btnUnjoinRect = document.getElementById("btnUnjoinRect");
+const btnMergeNearbyRect = document.getElementById("btnMergeNearbyRect");
+
+const roundSeatsControls = document.getElementById("roundSeatsControls");
+const lblRoundSeatsMax = document.getElementById("lblRoundSeatsMax");
 const inpTableSeats = document.getElementById("inpTableSeats");
+
+const rectSeatsControls = document.getElementById("rectSeatsControls");
+const lblRectPerSideMax = document.getElementById("lblRectPerSideMax");
+const inpSeatsPerSide = document.getElementById("inpSeatsPerSide");
+const selRectSides = document.getElementById("selRectSides");
+const lblRectTotalSeats = document.getElementById("lblRectTotalSeats");
+
 const rotationControls = document.getElementById("rotationControls");
 const lblRotationVal = document.getElementById("lblRotationVal");
 const rngTableRotation = document.getElementById("rngTableRotation");
@@ -154,6 +178,8 @@ const btnNavScale = document.getElementById("btnNavScale");
 const mobileQuickBar = document.getElementById("mobileQuickBar");
 const quickBarTitle = document.getElementById("quickBarTitle");
 const btnQuickChairs = document.getElementById("btnQuickChairs");
+const btnQuickJoin = document.getElementById("btnQuickJoin");
+const btnQuickUnjoin = document.getElementById("btnQuickUnjoin");
 const btnQuickRotate = document.getElementById("btnQuickRotate");
 const btnQuickDup = document.getElementById("btnQuickDup");
 const btnQuickDel = document.getElementById("btnQuickDel");
@@ -170,6 +196,43 @@ function getCatalogSpec(typeId) {
   return TABLE_CATALOG.find((t) => t.typeId === typeId) || TABLE_CATALOG[0];
 }
 
+/**
+ * Calcula el máximo de sillas por largo en mesas rectangulares:
+ * - 1 mesa: máx 3 sillas por largo
+ * - Mesas unidas: 7 sillas cada 2 mesas (ej: 2 mesas -> 7; 3 mesas -> 10; 4 mesas -> 14)
+ */
+function getMaxSeatsPerLongSide(joinedCount) {
+  const n = Math.max(1, Math.round(joinedCount || 1));
+  return Math.floor(n / 2) * 7 + (n % 2) * 3;
+}
+
+/**
+ * Normaliza los campos de sillas y unión de cualquier mesa
+ */
+function normalizeTableConfig(table) {
+  const spec = getCatalogSpec(table.typeId);
+  if (spec.shape === "circle") {
+    table.joinedCount = 1;
+    const maxS = spec.maxSeats || 13;
+    if (table.seats === undefined || table.seats > maxS) {
+      table.seats = maxS;
+    }
+    table.seats = Math.max(0, Math.min(maxS, Math.round(table.seats)));
+  } else {
+    table.joinedCount = Math.max(1, Math.min(12, Math.round(table.joinedCount || 1)));
+    table.rectSides = table.rectSides === 1 ? 1 : 2;
+    const maxPerSide = getMaxSeatsPerLongSide(table.joinedCount);
+    if (table.seatsPerSide === undefined) {
+      table.seatsPerSide = maxPerSide;
+    }
+    table.seatsPerSide = Math.max(
+      0,
+      Math.min(maxPerSide, Math.round(table.seatsPerSide))
+    );
+    table.seats = table.seatsPerSide * table.rectSides;
+  }
+}
+
 function getEffectiveDimensions(table) {
   const spec = getCatalogSpec(table.typeId);
   const extra = table.hasChairs
@@ -183,18 +246,23 @@ function getEffectiveDimensions(table) {
     const effD = baseD + extra;
     return {
       shape: "circle",
+      joinedCount: 1,
       baseDiameter: baseD,
       effDiameter: effD,
       baseRadius: baseD / 2,
       effRadius: effD / 2
     };
   } else {
-    const baseL = spec.length;
+    const joined = Math.max(1, Math.round(table.joinedCount || 1));
+    const unitL = spec.length;
+    const baseL = unitL * joined;
     const baseW = spec.width;
     const effL = baseL + extra;
     const effW = baseW + extra;
     return {
       shape: "rect",
+      joinedCount: joined,
+      unitLength: unitL,
       baseLength: baseL,
       baseWidth: baseW,
       effLength: effL,
@@ -424,6 +492,7 @@ function evaluateCollisions() {
   const EPS = 0.001;
 
   for (const t of state.tables) {
+    normalizeTableConfig(t);
     t.isConflict = false;
     t.nearestDist = Infinity;
     t.nearestOther = null;
@@ -462,6 +531,69 @@ function evaluateCollisions() {
   }
 
   return conflicts;
+}
+
+/**
+ * Busca si hay otra mesa rectangular cercana (< 0.65m) que se pueda unir con la mesa seleccionada
+ */
+function findNearbyMergeableRect(table) {
+  if (!table) return null;
+  const spec = getCatalogSpec(table.typeId);
+  if (spec.shape !== "rect") return null;
+
+  let bestOther = null;
+  let bestDist = 0.65;
+  for (const other of state.tables) {
+    if (other.id === table.id) continue;
+    const otherSpec = getCatalogSpec(other.typeId);
+    if (otherSpec.shape !== "rect") continue;
+    const res = computeTablePairDistanceMeters(table, other);
+    if (res.distance < bestDist) {
+      bestDist = res.distance;
+      bestOther = other;
+    }
+  }
+  return bestOther;
+}
+
+/* ==========================================================================
+   UNIÓN Y SEPARACIÓN DE MESAS RECTANGULARES
+   ========================================================================== */
+
+function changeRectJoinedCount(table, delta) {
+  if (!table) return;
+  const spec = getCatalogSpec(table.typeId);
+  if (spec.shape !== "rect") return;
+
+  const currentJoined = Math.max(1, Math.round(table.joinedCount || 1));
+  const nextJoined = Math.max(1, Math.min(12, currentJoined + delta));
+  if (nextJoined === currentJoined) return;
+
+  table.joinedCount = nextJoined;
+  // Actualizar automáticamente al máximo de sillas correspondiente (3 para 1 mesa, 7 cada 2 mesas)
+  table.seatsPerSide = getMaxSeatsPerLongSide(nextJoined);
+  normalizeTableConfig(table);
+  saveToLocalStorage();
+  renderAll();
+}
+
+function mergeWithNearbyRect(table) {
+  const other = findNearbyMergeableRect(table);
+  if (!other) return;
+
+  const totalJoined = Math.min(
+    12,
+    (table.joinedCount || 1) + (other.joinedCount || 1)
+  );
+  table.x = (table.x + other.x) / 2;
+  table.y = (table.y + other.y) / 2;
+  table.joinedCount = totalJoined;
+  table.seatsPerSide = getMaxSeatsPerLongSide(totalJoined);
+  normalizeTableConfig(table);
+
+  state.tables = state.tables.filter((t) => t.id !== other.id);
+  saveToLocalStorage();
+  renderAll();
 }
 
 /* ==========================================================================
@@ -523,8 +655,8 @@ function renderCatalog() {
   catalogList.innerHTML = "";
   const extraLabel = state.defaultAddChairs
     ? state.chairMode === "per_side"
-      ? " (+1,00m con sillas)"
-      : " (+0,50m con sillas)"
+      ? " (+1,0m sillas)"
+      : " (+0,5m sillas)"
     : "";
 
   for (const item of TABLE_CATALOG) {
@@ -582,6 +714,7 @@ function findSmartSpawnPosition(typeId, hasChairs) {
     x: 371,
     y: 380,
     rotation: 0,
+    joinedCount: 1,
     hasChairs
   };
 
@@ -615,6 +748,15 @@ function addTable(typeId, customProps = {}) {
       ? { x: customProps.x, y: customProps.y }
       : findSmartSpawnPosition(typeId, hasChairs);
 
+  const joinedCount = customProps.joinedCount || 1;
+  const rectSides = customProps.rectSides || 2;
+  const seatsPerSide =
+    customProps.seatsPerSide !== undefined
+      ? customProps.seatsPerSide
+      : spec.shape === "rect"
+      ? getMaxSeatsPerLongSide(joinedCount)
+      : undefined;
+
   const newTable = {
     id: "t_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
     name: customProps.name || `M${state.nextCounter++}`,
@@ -623,10 +765,14 @@ function addTable(typeId, customProps = {}) {
     y: pos.y,
     rotation: customProps.rotation || 0,
     hasChairs,
+    joinedCount,
+    rectSides,
+    seatsPerSide,
     seats:
       customProps.seats !== undefined ? customProps.seats : spec.defaultSeats
   };
 
+  normalizeTableConfig(newTable);
   state.tables.push(newTable);
   state.selectedId = newTable.id;
   saveToLocalStorage();
@@ -655,6 +801,9 @@ function duplicateSelectedTable() {
     y: ny,
     rotation: sel.rotation,
     hasChairs: sel.hasChairs,
+    joinedCount: sel.joinedCount,
+    rectSides: sel.rectSides,
+    seatsPerSide: sel.seatsPerSide,
     seats: sel.seats
   });
 }
@@ -782,16 +931,23 @@ function renderDimensionsLayer() {
   dimensionsLayer.innerHTML = html;
 }
 
+/**
+ * Dibuja las sillas alrededor de las mesas redondas (máx 13, 11, 4)
+ * o a lo largo de los largos en mesas rectangulares (máx 3 por largo en 1 mesa, 7 cada 2 mesas)
+ */
 function buildChairsSvg(table, dim, ppm, strokeColor) {
   if (!table.hasChairs || table.seats <= 0) return "";
-  const count = Math.min(30, Math.max(1, table.seats));
   const chairDepthPx = (state.chairMode === "per_side" ? 0.42 : 0.23) * ppm;
-  const chairWidthPx = Math.min(0.45 * ppm, 16);
   let html = "";
 
   if (dim.shape === "circle") {
+    const count = Math.max(0, table.seats);
+    if (count === 0) return "";
     const baseR = dim.baseRadius * ppm;
+    const circumference = 2 * Math.PI * baseR;
+    const chairWidthPx = Math.min(0.42 * ppm, (circumference / count) * 0.72, 15);
     const rCenter = baseR + chairDepthPx * 0.55;
+
     for (let i = 0; i < count; i++) {
       const ang = (i / count) * Math.PI * 2;
       const deg = (ang * 180) / Math.PI + 90;
@@ -806,51 +962,40 @@ function buildChairsSvg(table, dim, ppm, strokeColor) {
         1
       )}" rx="3" transform="rotate(${deg.toFixed(1)}, ${cx.toFixed(1)}, ${cy.toFixed(
         1
-      )})" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.9" />`;
+      )})" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.92" />`;
     }
   } else {
+    const perSide = Math.max(0, table.seatsPerSide || 0);
+    if (perSide === 0) return "";
     const baseL = dim.baseLength * ppm;
     const baseW = dim.baseWidth * ppm;
-    const useEnds = count >= 6 && baseW >= 0.85 * ppm;
-    const endSeats = useEnds ? 2 : 0;
-    const sideSeats = Math.max(0, count - endSeats);
-    const topCount = Math.ceil(sideSeats / 2);
-    const botCount = Math.floor(sideSeats / 2);
-
+    const chairWidthPx = Math.min(0.42 * ppm, (baseL / perSide) * 0.72, 16);
     const offsetOut = chairDepthPx * 0.55;
-    for (let i = 0; i < topCount; i++) {
-      const x = -baseL / 2 + ((i + 0.5) / topCount) * baseL;
+
+    // Largo superior
+    for (let i = 0; i < perSide; i++) {
+      const x = -baseL / 2 + ((i + 0.5) / perSide) * baseL;
       const y = -baseW / 2 - offsetOut;
       html += `<rect x="${(x - chairWidthPx / 2).toFixed(1)}" y="${(
         y -
         chairDepthPx * 0.35
       ).toFixed(1)}" width="${chairWidthPx.toFixed(1)}" height="${(
         chairDepthPx * 0.7
-      ).toFixed(1)}" rx="2.5" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.9" />`;
+      ).toFixed(1)}" rx="2.5" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.92" />`;
     }
-    for (let i = 0; i < botCount; i++) {
-      const x = -baseL / 2 + ((i + 0.5) / botCount) * baseL;
-      const y = baseW / 2 + offsetOut;
-      html += `<rect x="${(x - chairWidthPx / 2).toFixed(1)}" y="${(
-        y -
-        chairDepthPx * 0.35
-      ).toFixed(1)}" width="${chairWidthPx.toFixed(1)}" height="${(
-        chairDepthPx * 0.7
-      ).toFixed(1)}" rx="2.5" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.9" />`;
-    }
-    if (useEnds) {
-      const xLeft = -baseL / 2 - offsetOut;
-      const xRight = baseL / 2 + offsetOut;
-      html += `<rect x="${(xLeft - chairDepthPx * 0.35).toFixed(1)}" y="${(
-        -chairWidthPx / 2
-      ).toFixed(1)}" width="${(chairDepthPx * 0.7).toFixed(
-        1
-      )}" height="${chairWidthPx.toFixed(1)}" rx="2.5" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.9" />`;
-      html += `<rect x="${(xRight - chairDepthPx * 0.35).toFixed(1)}" y="${(
-        -chairWidthPx / 2
-      ).toFixed(1)}" width="${(chairDepthPx * 0.7).toFixed(
-        1
-      )}" height="${chairWidthPx.toFixed(1)}" rx="2.5" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.9" />`;
+
+    // Largo inferior (si están activos ambos largos)
+    if (table.rectSides !== 1) {
+      for (let i = 0; i < perSide; i++) {
+        const x = -baseL / 2 + ((i + 0.5) / perSide) * baseL;
+        const y = baseW / 2 + offsetOut;
+        html += `<rect x="${(x - chairWidthPx / 2).toFixed(1)}" y="${(
+          y -
+          chairDepthPx * 0.35
+        ).toFixed(1)}" width="${chairWidthPx.toFixed(1)}" height="${(
+          chairDepthPx * 0.7
+        ).toFixed(1)}" rx="2.5" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.92" />`;
+      }
     }
   }
   return html;
@@ -944,6 +1089,19 @@ function renderTablesLayer() {
         1
       )}" rx="3" fill="${fillColor}" stroke="${strokeColor}" stroke-width="2" />`;
 
+      // Si hay varias mesas rectangulares unidas, dibujar las uniones entre tableros
+      if (dim.joinedCount > 1) {
+        const unitLPx = baseL / dim.joinedCount;
+        for (let k = 1; k < dim.joinedCount; k++) {
+          const seamX = -baseL / 2 + k * unitLPx;
+          innerSvg += `<line x1="${seamX.toFixed(1)}" y1="${(
+            -baseW / 2
+          ).toFixed(1)}" x2="${seamX.toFixed(1)}" y2="${(
+            baseW / 2
+          ).toFixed(1)}" stroke="#ffffff" stroke-width="1.6" stroke-dasharray="3 2" opacity="0.85" />`;
+        }
+      }
+
       if (isSelected) {
         const selL = effL + 8;
         const selW = effW + 8;
@@ -970,19 +1128,22 @@ function renderTablesLayer() {
       }
     }
 
+    const joinedBadge =
+      dim.shape === "rect" && dim.joinedCount > 1 ? ` (×${dim.joinedCount})` : "";
+    const seatsBadge = table.hasChairs ? ` · ${table.seats}🪑` : "";
     const dimText =
       dim.shape === "circle"
-        ? `Ø${dim.effDiameter.toFixed(1).replace(".", ",")}m`
+        ? `Ø${dim.effDiameter.toFixed(1).replace(".", ",")}m${seatsBadge}`
         : `${dim.effLength.toFixed(1).replace(".", ",")}×${dim.effWidth
             .toFixed(2)
             .replace(/0$/, "")
-            .replace(".", ",")}m`;
+            .replace(".", ",")}m${seatsBadge}`;
 
     const counterRot = -(table.rotation || 0);
     innerSvg += `
       <g transform="rotate(${counterRot})" pointer-events="none">
-        <text x="0" y="-2" text-anchor="middle" font-size="10.5" font-weight="800" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2.5px;">${table.name}</text>
-        <text x="0" y="9" text-anchor="middle" font-size="8.5" font-weight="700" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2px;">${dimText}</text>
+        <text x="0" y="-2" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2.5px;">${table.name}${joinedBadge}</text>
+        <text x="0" y="9" text-anchor="middle" font-size="8" font-weight="700" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2px;">${dimText}</text>
       </g>
     `;
 
@@ -1098,13 +1259,16 @@ function renderToolOverlay() {
    ========================================================================== */
 
 function updateStatsAndInspector() {
-  const totalTables = state.tables.length;
+  const totalPhysicalTables = state.tables.reduce(
+    (acc, t) => acc + Math.max(1, t.joinedCount || 1),
+    0
+  );
   const totalSeats = state.tables.reduce(
     (acc, t) => acc + (t.hasChairs ? Number(t.seats) || 0 : 0),
     0
   );
 
-  statTables.innerHTML = `Mesas: <strong>${totalTables}</strong>`;
+  statTables.innerHTML = `Mesas: <strong>${totalPhysicalTables}</strong>`;
   statSeats.innerHTML = `Sillas: <strong>${totalSeats}</strong>`;
 
   const conflictTablesCount = state.tables.filter((t) => t.isConflict).length;
@@ -1137,36 +1301,81 @@ function updateStatsAndInspector() {
     const spec = getCatalogSpec(sel.typeId);
     const dim = getEffectiveDimensions(sel);
 
-    quickBarTitle.textContent = sel.name;
+    quickBarTitle.textContent =
+      dim.shape === "rect" && dim.joinedCount > 1
+        ? `${sel.name} (×${dim.joinedCount})`
+        : sel.name;
     btnQuickChairs.classList.toggle("active", !!sel.hasChairs);
     btnQuickRotate.style.display = dim.shape === "rect" ? "inline-flex" : "none";
+    btnQuickJoin.style.display = dim.shape === "rect" ? "inline-flex" : "none";
+    btnQuickUnjoin.style.display =
+      dim.shape === "rect" && dim.joinedCount > 1 ? "inline-flex" : "none";
 
     if (document.activeElement !== inpTableName) {
       inpTableName.value = sel.name;
     }
     lblTableType.textContent = spec.name;
+    chkTableChairs.checked = !!sel.hasChairs;
 
     if (dim.shape === "circle") {
+      rectJoinControls.style.display = "none";
+      roundSeatsControls.style.display = "flex";
+      rectSeatsControls.style.display = "none";
+      rotationControls.style.display = "none";
+
       lblTableBaseDim.textContent = `Ø ${fmtMeters(dim.baseDiameter)}`;
       lblTableEffDim.textContent = `Ø ${fmtMeters(dim.effDiameter)}${
         sel.hasChairs ? " (con sillas)" : ""
       }`;
-      rotationControls.style.display = "none";
+
+      const maxRound = spec.maxSeats || 13;
+      lblRoundSeatsMax.textContent = `Nº de sillas (máx. ${maxRound}):`;
+      inpTableSeats.max = String(maxRound);
+      if (document.activeElement !== inpTableSeats) {
+        inpTableSeats.value = sel.seats;
+      }
     } else {
+      rectJoinControls.style.display = "block";
+      roundSeatsControls.style.display = "none";
+      rectSeatsControls.style.display = "flex";
+      rotationControls.style.display = "block";
+
+      lblJoinedCount.textContent =
+        dim.joinedCount === 1
+          ? "1 mesa individual"
+          : `${dim.joinedCount} mesas unidas`;
+      btnUnjoinRect.disabled = dim.joinedCount <= 1;
+
+      const nearbyRect = findNearbyMergeableRect(sel);
+      if (nearbyRect) {
+        btnMergeNearbyRect.style.display = "inline-flex";
+        btnMergeNearbyRect.textContent = `🧲 Unir con ${nearbyRect.name}`;
+      } else {
+        btnMergeNearbyRect.style.display = "none";
+      }
+
       lblTableBaseDim.textContent = `${fmtMeters(dim.baseLength)} × ${fmtMeters(
         dim.baseWidth
       )}`;
       lblTableEffDim.textContent = `${fmtMeters(dim.effLength)} × ${fmtMeters(
         dim.effWidth
       )}${sel.hasChairs ? " (con sillas)" : ""}`;
-      rotationControls.style.display = "block";
+
+      const maxPerSide = getMaxSeatsPerLongSide(dim.joinedCount);
+      lblRectPerSideMax.textContent = `Sillas por largo (máx. ${maxPerSide}):`;
+      inpSeatsPerSide.max = String(maxPerSide);
+      if (document.activeElement !== inpSeatsPerSide) {
+        inpSeatsPerSide.value = sel.seatsPerSide;
+      }
+      selRectSides.value = String(sel.rectSides || 2);
+      lblRectTotalSeats.textContent = sel.hasChairs
+        ? `${sel.seats} sillas (${sel.seatsPerSide} × ${sel.rectSides} ${
+            sel.rectSides === 1 ? "largo" : "largos"
+          })`
+        : "0 (sillas desactivadas)";
+
       lblRotationVal.textContent = `${Math.round(sel.rotation || 0)}°`;
       rngTableRotation.value = Math.round(sel.rotation || 0);
-    }
-
-    chkTableChairs.checked = !!sel.hasChairs;
-    if (document.activeElement !== inpTableSeats) {
-      inpTableSeats.value = sel.seats;
     }
 
     if (!Number.isFinite(sel.nearestDist)) {
@@ -1183,8 +1392,8 @@ function updateStatsAndInspector() {
     }
   }
 
-  lblListCount.textContent = String(totalTables);
-  if (totalTables === 0) {
+  lblListCount.textContent = String(state.tables.length);
+  if (state.tables.length === 0) {
     tableListMini.innerHTML = `<div class="empty-state" style="padding: 12px 4px;">No hay mesas todavía. Pulsa en cualquiera de los 6 modelos para añadirla.</div>`;
   } else {
     tableListMini.innerHTML = "";
@@ -1193,11 +1402,13 @@ function updateStatsAndInspector() {
       const row = document.createElement("div");
       row.className = `table-row-item ${t.id === state.selectedId ? "selected" : ""}`;
       const dotClass = t.isConflict ? "red" : "green";
-      const chairTag = t.hasChairs ? `🪑 +0,5m` : `Sin sillas`;
+      const joinedStr =
+        spec.shape === "rect" && t.joinedCount > 1 ? ` (×${t.joinedCount})` : "";
+      const chairTag = t.hasChairs ? `🪑 ${t.seats}` : `Sin sillas`;
       row.innerHTML = `
         <div style="display:flex;align-items:center;gap:7px;">
           <span class="dot ${dotClass}"></span>
-          <strong>${t.name}</strong>
+          <strong>${t.name}${joinedStr}</strong>
           <span style="color:var(--text-muted);font-size:11px;">${spec.name.replace(/^\d+\.\s*/, "")}</span>
         </div>
         <span style="font-size:11px;color:var(--text-muted);">${chairTag}</span>
@@ -1482,13 +1693,6 @@ chkDefaultChairs.addEventListener("change", () => {
 
 selChairMode.addEventListener("change", () => {
   state.chairMode = selChairMode.value;
-  if (state.chairMode === "total") {
-    chairModeHint.innerHTML =
-      "Modo actual: cada mesa con sillas suma <strong>+0,50 m a sus medidas</strong> (ej: Ø 2,0m → Ø 2,5m).";
-  } else {
-    chairModeHint.innerHTML =
-      "Modo actual: cada mesa con sillas suma <strong>+0,50 m por cada lado</strong> (+1,0m al total, ej: Ø 2,0m → Ø 3,0m).";
-  }
   renderCatalog();
   renderAll();
   saveToLocalStorage();
@@ -1588,13 +1792,62 @@ chkTableChairs.addEventListener("change", () => {
   }
 });
 
+// Sillas en mesas redondas (tope 13 / 11 / 4)
 inpTableSeats.addEventListener("input", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel) {
-    sel.seats = Math.max(0, Math.min(30, parseInt(inpTableSeats.value, 10) || 0));
+    const spec = getCatalogSpec(sel.typeId);
+    const maxRound = spec.maxSeats || 13;
+    sel.seats = Math.max(
+      0,
+      Math.min(maxRound, parseInt(inpTableSeats.value, 10) || 0)
+    );
+    inpTableSeats.value = sel.seats;
     saveToLocalStorage();
     renderAll();
   }
+});
+
+// Sillas por largo y lados en mesas rectangulares (máx 3 por largo en 1 mesa, 7 cada 2 mesas)
+inpSeatsPerSide.addEventListener("input", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  if (sel) {
+    const maxPerSide = getMaxSeatsPerLongSide(sel.joinedCount || 1);
+    sel.seatsPerSide = Math.max(
+      0,
+      Math.min(maxPerSide, parseInt(inpSeatsPerSide.value, 10) || 0)
+    );
+    inpSeatsPerSide.value = sel.seatsPerSide;
+    normalizeTableConfig(sel);
+    saveToLocalStorage();
+    renderAll();
+  }
+});
+
+selRectSides.addEventListener("change", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  if (sel) {
+    sel.rectSides = parseInt(selRectSides.value, 10) === 1 ? 1 : 2;
+    normalizeTableConfig(sel);
+    saveToLocalStorage();
+    renderAll();
+  }
+});
+
+// Botones de unir / separar mesas rectangulares
+btnJoinRect.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  changeRectJoinedCount(sel, 1);
+});
+
+btnUnjoinRect.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  changeRectJoinedCount(sel, -1);
+});
+
+btnMergeNearbyRect.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  mergeWithNearbyRect(sel);
 });
 
 rngTableRotation.addEventListener("input", () => {
@@ -1624,6 +1877,7 @@ document
   .getElementById("btnDeleteTable")
   .addEventListener("click", deleteSelectedTable);
 
+// Botones de la barra rápida móvil
 btnQuickChairs.addEventListener("click", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel) {
@@ -1631,6 +1885,16 @@ btnQuickChairs.addEventListener("click", () => {
     saveToLocalStorage();
     renderAll();
   }
+});
+
+btnQuickJoin.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  changeRectJoinedCount(sel, 1);
+});
+
+btnQuickUnjoin.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  changeRectJoinedCount(sel, -1);
 });
 
 btnQuickRotate.addEventListener("click", () => {
@@ -1733,7 +1997,7 @@ window.addEventListener("keydown", (e) => {
    PERSISTENCIA Y EJEMPLO INICIAL
    ========================================================================== */
 
-const STORAGE_KEY = "adamil_plano_mesas_v1";
+const STORAGE_KEY = "adamil_plano_mesas_v2";
 
 function saveToLocalStorage() {
   try {
@@ -1762,6 +2026,7 @@ function loadFromLocalStorage() {
         data.defaultAddChairs !== undefined ? data.defaultAddChairs : true;
       state.nextCounter = data.nextCounter || data.tables.length + 1;
       state.tables = data.tables;
+      for (const t of state.tables) normalizeTableConfig(t);
 
       inpHallWidth.value = (DEFAULT_HALL_WIDTH_PX / state.pxPerMeter).toFixed(2);
       inpMinClearance.value = state.minClearance.toFixed(2);
@@ -1777,39 +2042,52 @@ function loadSampleLayout() {
   state.tables = [];
   state.nextCounter = 1;
 
+  // Ejemplo de Presidencia con 2 mesas rectangulares unidas (7 sillas por largo)
   addTable("rect_xl", {
     name: "Presidencia",
     x: 371,
     y: 125,
     rotation: 0,
     hasChairs: true,
-    seats: 8
+    joinedCount: 2,
+    rectSides: 1,
+    seatsPerSide: 7
   });
 
-  addTable("round_lg", { name: "M1", x: 185, y: 270, hasChairs: true });
-  addTable("round_lg", { name: "M2", x: 371, y: 270, hasChairs: true });
-  addTable("round_lg", { name: "M3", x: 555, y: 270, hasChairs: true });
+  // Mesas redondas grandes (máx 13 sillas)
+  addTable("round_lg", { name: "M1", x: 185, y: 270, hasChairs: true, seats: 13 });
+  addTable("round_lg", { name: "M2", x: 371, y: 270, hasChairs: true, seats: 13 });
+  addTable("round_lg", { name: "M3", x: 555, y: 270, hasChairs: true, seats: 13 });
 
-  addTable("round_md", { name: "M4", x: 185, y: 410, hasChairs: true });
-  addTable("round_md", { name: "M5", x: 371, y: 410, hasChairs: true });
-  addTable("round_md", { name: "M6", x: 555, y: 410, hasChairs: true });
+  // Mesas redondas medianas (máx 11 sillas)
+  addTable("round_md", { name: "M4", x: 185, y: 410, hasChairs: true, seats: 11 });
+  addTable("round_md", { name: "M5", x: 371, y: 410, hasChairs: true, seats: 11 });
+  addTable("round_md", { name: "M6", x: 555, y: 410, hasChairs: true, seats: 11 });
 
-  addTable("round_sm", { name: "M7", x: 260, y: 525, hasChairs: true });
-  addTable("round_sm", { name: "M8", x: 480, y: 525, hasChairs: true });
+  // Mesas redondas pequeñas (máx 4 sillas)
+  addTable("round_sm", { name: "M7", x: 260, y: 525, hasChairs: true, seats: 4 });
+  addTable("round_sm", { name: "M8", x: 480, y: 525, hasChairs: true, seats: 4 });
 
+  // Mesas rectangulares en alas inferiores (máx 3 sillas por largo = 6 sillas)
   addTable("rect_lg", {
     name: "Mesa Izq",
     x: 155,
     y: 925,
     rotation: 0,
-    hasChairs: true
+    hasChairs: true,
+    joinedCount: 1,
+    rectSides: 2,
+    seatsPerSide: 3
   });
   addTable("rect_sm", {
     name: "Mesa Dcha",
     x: 585,
     y: 925,
     rotation: 0,
-    hasChairs: true
+    hasChairs: true,
+    joinedCount: 1,
+    rectSides: 2,
+    seatsPerSide: 3
   });
 
   state.selectedId = state.tables[0].id;

@@ -527,6 +527,13 @@ input[type="range"] {
   gap: 10px;
 }
 
+.join-box {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
 .quick-angles {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

@@ -87,7 +87,8 @@
         </div>
 
         <div class="hint-box" id="chairModeHint">
-          Con sillas activadas, cada mesa suma <strong>+0,50 m</strong> a sus medidas para el cálculo de espacio y distancia mínima de paso.
+          • Redondas: máx <strong>13</strong> (grande), <strong>11</strong> (mediana), <strong>4</strong> (pequeña).<br />
+          • Rectangulares: máx <strong>3 por largo</strong> (1 mesa) o <strong>7 cada 2 mesas</strong> unidas.
         </div>
       </section>
 
@@ -230,6 +231,8 @@
       <div class="mobile-quick-bar" id="mobileQuickBar">
         <span class="quick-bar-title" id="quickBarTitle">M1</span>
         <button class="btn" id="btnQuickChairs" type="button" title="Con/sin sillas (+0,5m)">🪑 Sillas</button>
+        <button class="btn" id="btnQuickJoin" type="button" title="Unir otra mesa rectangular (+1)">🔗 +Mesa</button>
+        <button class="btn" id="btnQuickUnjoin" type="button" title="Separar una mesa rectangular (-1)">➖</button>
         <button class="btn" id="btnQuickRotate" type="button" title="Rotar +45°">↻ 45°</button>
         <button class="btn" id="btnQuickDup" type="button" title="Duplicar mesa">📋</button>
         <button class="btn btn-danger" id="btnQuickDel" type="button" title="Borrar mesa">🗑️</button>
@@ -256,7 +259,7 @@
           <span>⚙️ Mesa Seleccionada</span>
         </div>
         <div id="inspectorEmpty" class="empty-state">
-          Toca o haz clic sobre cualquier mesa en el plano para editar su rotación, sillas, etiqueta o posición.
+          Toca o haz clic sobre cualquier mesa en el plano para editar su rotación, sillas, unión o posición.
         </div>
 
         <div id="inspectorContent" class="inspector-grid" style="display: none;">
@@ -270,8 +273,27 @@
             <strong id="lblTableType" style="font-size: 12px; text-align: right;">-</strong>
           </div>
 
+          <!-- Controles de Unión de Mesas Rectangulares -->
+          <div id="rectJoinControls" class="join-box" style="display: none;">
+            <div class="control-row" style="margin-bottom: 6px;">
+              <span>🔗 Mesas unidas:</span>
+              <strong id="lblJoinedCount" style="color: var(--primary);">1 mesa</strong>
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <button class="btn" id="btnUnjoinRect" type="button" style="flex: 1; justify-content: center; font-size: 11.5px;">
+                ➖ Quitar
+              </button>
+              <button class="btn btn-primary" id="btnJoinRect" type="button" style="flex: 1.4; justify-content: center; font-size: 11.5px;">
+                🔗 Unir otra (+1)
+              </button>
+            </div>
+            <button class="btn" id="btnMergeNearbyRect" type="button" style="width: 100%; justify-content: center; margin-top: 6px; display: none; border-color: var(--primary); color: var(--primary);">
+              🧲 Unir con mesa cercana
+            </button>
+          </div>
+
           <div class="control-row">
-            <span>Medida base:</span>
+            <span>Medida tablero:</span>
             <strong id="lblTableBaseDim">-</strong>
           </div>
 
@@ -287,9 +309,29 @@
             </label>
           </div>
 
-          <div class="control-row">
-            <span>Nº de sillas (visual):</span>
-            <input type="number" id="inpTableSeats" min="0" max="30" step="1" style="width: 70px;" />
+          <!-- Configuración de sillas en mesa redonda -->
+          <div id="roundSeatsControls" class="control-row">
+            <span id="lblRoundSeatsMax">Nº de sillas (máx. 13):</span>
+            <input type="number" id="inpTableSeats" min="0" max="13" step="1" style="width: 72px;" />
+          </div>
+
+          <!-- Configuración de sillas en mesa rectangular (máx 3 por largo, o 7 cada 2 mesas) -->
+          <div id="rectSeatsControls" style="display: none; flex-direction: column; gap: 8px; background: #f8fafc; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color);">
+            <div class="control-row" style="margin-bottom: 0;">
+              <span id="lblRectPerSideMax">Sillas por largo (máx. 3):</span>
+              <input type="number" id="inpSeatsPerSide" min="0" max="3" step="1" style="width: 68px;" />
+            </div>
+            <div class="control-row" style="margin-bottom: 0;">
+              <span>Lados largos:</span>
+              <select id="selRectSides" style="flex: 1;">
+                <option value="2">Ambos largos (×2)</option>
+                <option value="1">1 solo largo (×1)</option>
+              </select>
+            </div>
+            <div class="control-row" style="margin-bottom: 0; font-size: 11.5px; color: var(--text-muted);">
+              <span>Total sillas en esta mesa:</span>
+              <strong id="lblRectTotalSeats" style="color: var(--text-main);">6 sillas</strong>
+            </div>
           </div>
 
           <div id="rotationControls">
@@ -338,13 +380,14 @@
       <!-- Ayuda rápida -->
       <section class="panel-section">
         <div class="panel-title">
-          <span>💡 Controles</span>
+          <span>💡 Reglas de Sillas</span>
         </div>
-        <div style="font-size: 11.5px; color: var(--text-muted); line-height: 1.6;">
-          • <strong>1 dedo en mesa:</strong> Mover mesa por el plano<br />
-          • <strong>1 dedo en fondo:</strong> Desplazar el plano<br />
-          • <strong>2 dedos (pellizcar):</strong> Zoom en móvil<br />
-          • <strong>Teclas R / S / D / Supr:</strong> Rotar, Sillas, Duplicar, Borrar
+        <div style="font-size: 11.5px; color: var(--text-muted); line-height: 1.55;">
+          • <strong>Redonda grande (2m):</strong> máx. 13 sillas<br />
+          • <strong>Redonda mediana (1,8m):</strong> máx. 11 sillas<br />
+          • <strong>Redonda pequeña (1,2m):</strong> máx. 4 sillas<br />
+          • <strong>Rectangular (1 mesa):</strong> máx. 3 sillas por largo<br />
+          • <strong>Rectangulares unidas:</strong> 7 sillas por largo cada 2 mesas
         </div>
       </section>
     </aside>
@@ -358,7 +401,7 @@
     </button>
     <button class="mobile-nav-btn" id="btnNavInspect" type="button">
       <span class="nav-icon">⚙️</span>
-      <span>Editar / Lista</span>
+      <span>Editar / Unir</span>
     </button>
     <button class="mobile-nav-btn" id="btnNavScale" type="button">
       <span class="nav-icon">📐</span>
