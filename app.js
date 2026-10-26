@@ -1,5 +1,5 @@
 /**
- * Planificador de Mesas a Escala - Adamil (Responsive Desktop & Mobile)
+ * Planificador de Mesas a Escala - Adamil (Responsive Desktop & Mobile con SVG viewBox nativo)
  * Reglas:
  * 1. Mesa redonda grande: 2.0m diámetro
  * 2. Mesa redonda mediana: 1.8m diámetro
@@ -88,9 +88,9 @@ const state = {
   showGrid: true,
   showClearanceHalo: false,
   cleanPlan: true,
-  zoom: 0.85,
-  panX: 0,
-  panY: 0,
+  zoom: 1.0, // 1.0 = encaje completo automático en viewBox 0 0 734 1024
+  panX: 0, // Desplazamiento en unidades SVG (0..734)
+  panY: 0, // Desplazamiento en unidades SVG (0..1024)
   tables: [],
   selectedId: null,
   nextCounter: 1,
@@ -103,7 +103,6 @@ const state = {
 const planImage = document.getElementById("planImage");
 const planSvg = document.getElementById("planSvg");
 const canvasWrapper = document.getElementById("canvasWrapper");
-const canvasStage = document.getElementById("canvasStage");
 const gridLayer = document.getElementById("gridLayer");
 const dimensionsLayer = document.getElementById("dimensionsLayer");
 const tablesLayer = document.getElementById("tablesLayer");
@@ -954,7 +953,6 @@ function renderTablesLayer() {
           1
         )}" height="${selW.toFixed(1)}" rx="6" fill="none" />`;
 
-        // Tirador de rotación más amplio para uso táctil en móvil
         const handleY = -effW / 2 - 20;
         innerSvg += `
           <g class="rotate-handle" data-rotate-id="${table.id}">
@@ -963,7 +961,7 @@ function renderTablesLayer() {
         )}" stroke="#2563eb" stroke-width="2" />
             <circle cx="0" cy="${handleY.toFixed(
               1
-            )}" r="12" fill="rgba(37, 99, 235, 0.15)" />
+            )}" r="14" fill="rgba(37, 99, 235, 0.15)" />
             <circle cx="0" cy="${handleY.toFixed(
               1
             )}" r="6.5" fill="#2563eb" stroke="#ffffff" stroke-width="1.5" />
@@ -1224,23 +1222,36 @@ function renderAll() {
 }
 
 /* ==========================================================================
-   INTERACCIÓN EN EL LIENZO: RATÓN + TÁCTIL (MOVER, ROTAR, PAN Y PINCH-ZOOM)
+   VIEWBOX NATIVO Y COORDENADAS SVG (AJUSTE AUTOMÁTICO EN MÓVIL Y ESCRITORIO)
    ========================================================================== */
 
-function updateStageTransform() {
-  canvasStage.style.transform = `translate(calc(-50% + ${state.panX.toFixed(
-    1
-  )}px), calc(-50% + ${state.panY.toFixed(1)}px)) scale(${state.zoom})`;
+function updateSvgViewBox() {
+  const vbW = PLAN_WIDTH_PX / state.zoom;
+  const vbH = PLAN_HEIGHT_PX / state.zoom;
+  const cx = PLAN_WIDTH_PX / 2 - state.panX;
+  const cy = PLAN_HEIGHT_PX / 2 - state.panY;
+  const vbX = cx - vbW / 2;
+  const vbY = cy - vbH / 2;
+  planSvg.setAttribute(
+    "viewBox",
+    `${vbX.toFixed(1)} ${vbY.toFixed(1)} ${vbW.toFixed(1)} ${vbH.toFixed(1)}`
+  );
   lblZoom.textContent = `${Math.round(state.zoom * 100)}%`;
 }
 
 function clientToSvgCoords(clientX, clientY) {
+  const ctm = planSvg.getScreenCTM();
+  if (ctm) {
+    const pt = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+    return {
+      x: Math.max(10, Math.min(PLAN_WIDTH_PX - 10, pt.x)),
+      y: Math.max(10, Math.min(PLAN_HEIGHT_PX - 10, pt.y))
+    };
+  }
   const rect = planSvg.getBoundingClientRect();
-  const x = ((clientX - rect.left) / rect.width) * PLAN_WIDTH_PX;
-  const y = ((clientY - rect.top) / rect.height) * PLAN_HEIGHT_PX;
   return {
-    x: Math.max(10, Math.min(PLAN_WIDTH_PX - 10, x)),
-    y: Math.max(10, Math.min(PLAN_HEIGHT_PX - 10, y))
+    x: ((clientX - rect.left) / rect.width) * PLAN_WIDTH_PX,
+    y: ((clientY - rect.top) / rect.height) * PLAN_HEIGHT_PX
   };
 }
 
@@ -1260,7 +1271,6 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
 
   activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-  // Si hay 2 dedos en pantalla -> iniciar gesto de pellizco (pinch-to-zoom)
   if (activePointers.size === 2) {
     dragState = null;
     const pts = Array.from(activePointers.values());
@@ -1271,7 +1281,6 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
 
   const pt = clientToSvgCoords(e.clientX, e.clientY);
 
-  // Modo calibración o regla
   if (state.interactionMode === "calibrate" || state.interactionMode === "ruler") {
     state.toolPoints.push(pt);
     if (state.toolPoints.length === 1) {
@@ -1307,7 +1316,6 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
     return;
   }
 
-  // Tirador de rotación
   const rotateGroup = e.target.closest("[data-rotate-id]");
   if (rotateGroup) {
     const id = rotateGroup.dataset.rotateId;
@@ -1326,7 +1334,6 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
     }
   }
 
-  // Tocar/arrastrar una mesa
   const tableGroup = e.target.closest(".table-group");
   if (tableGroup) {
     const id = tableGroup.dataset.id;
@@ -1346,7 +1353,6 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
     }
   }
 
-  // Tocar en el fondo vacío -> permitir desplazar el plano (pan) y deseleccionar si es un toque corto
   dragState = {
     type: "pan",
     pointerId: e.pointerId,
@@ -1364,7 +1370,6 @@ canvasWrapper.addEventListener("pointermove", (e) => {
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   }
 
-  // Gesto de pellizco con 2 dedos
   if (activePointers.size === 2 && pinchStartDist > 10) {
     const pts = Array.from(activePointers.values());
     const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
@@ -1412,9 +1417,11 @@ canvasWrapper.addEventListener("pointermove", (e) => {
     if (Math.hypot(dx, dy) > 4) {
       dragState.moved = true;
     }
-    state.panX = dragState.origPanX + dx;
-    state.panY = dragState.origPanY + dy;
-    updateStageTransform();
+    const ctm = planSvg.getScreenCTM();
+    const scaleScreenToSvg = ctm && ctm.a ? 1 / ctm.a : 1;
+    state.panX = dragState.origPanX + dx * scaleScreenToSvg;
+    state.panY = dragState.origPanY + dy * scaleScreenToSvg;
+    updateSvgViewBox();
   }
 });
 
@@ -1534,7 +1541,10 @@ chkShowClearanceHalo.addEventListener("change", () => {
 
 chkCleanPlan.addEventListener("change", () => {
   state.cleanPlan = chkCleanPlan.checked;
-  planImage.src = state.cleanPlan ? "plano.png" : "plano_original.jpg";
+  planImage.setAttribute(
+    "href",
+    state.cleanPlan ? "plano.png" : "plano_original.jpg"
+  );
 });
 
 document.getElementById("btnCalibrateTwoPoints").addEventListener("click", () => {
@@ -1560,7 +1570,6 @@ document.getElementById("btnResetScale").addEventListener("click", () => {
   renderAll();
 });
 
-// Controles del Inspector y Barra Rápida Móvil
 inpTableName.addEventListener("input", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel) {
@@ -1615,7 +1624,6 @@ document
   .getElementById("btnDeleteTable")
   .addEventListener("click", deleteSelectedTable);
 
-// Botones de la barra rápida móvil
 btnQuickChairs.addEventListener("click", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel) {
@@ -1637,7 +1645,6 @@ btnQuickRotate.addEventListener("click", () => {
 btnQuickDup.addEventListener("click", duplicateSelectedTable);
 btnQuickDel.addEventListener("click", deleteSelectedTable);
 
-// Botones de barra superior
 document.getElementById("btnClearAll").addEventListener("click", () => {
   if (state.tables.length === 0) return;
   if (confirm("¿Seguro que quieres borrar todas las mesas del plano?")) {
@@ -1657,29 +1664,24 @@ document.getElementById("btnExportImg").addEventListener("click", () => {
   window.print();
 });
 
-// Zoom
+// Zoom y encaje
 function applyZoom(newZoom) {
-  state.zoom = Math.max(0.2, Math.min(2.6, newZoom));
-  updateStageTransform();
+  state.zoom = Math.max(0.6, Math.min(4.0, newZoom));
+  updateSvgViewBox();
 }
 
 function fitPlanToViewport() {
-  const rect = canvasWrapper.getBoundingClientRect();
-  if (rect.width < 20 || rect.height < 20) return;
-  const padX = isMobileViewport() ? 12 : 40;
-  const padY = isMobileViewport() ? 64 : 40;
-  const scaleX = (rect.width - padX) / PLAN_WIDTH_PX;
-  const scaleY = (rect.height - padY) / PLAN_HEIGHT_PX;
+  state.zoom = 1.0;
   state.panX = 0;
   state.panY = 0;
-  applyZoom(Math.min(scaleX, scaleY, 1.15));
+  updateSvgViewBox();
 }
 
 document.getElementById("btnZoomIn").addEventListener("click", () => {
-  applyZoom(state.zoom + 0.1);
+  applyZoom(state.zoom + 0.2);
 });
 document.getElementById("btnZoomOut").addEventListener("click", () => {
-  applyZoom(state.zoom - 0.1);
+  applyZoom(state.zoom - 0.2);
 });
 document
   .getElementById("btnZoomFit")
@@ -1689,7 +1691,7 @@ canvasWrapper.addEventListener(
   "wheel",
   (e) => {
     e.preventDefault();
-    const delta = e.deltaY < 0 ? 0.06 : -0.06;
+    const delta = e.deltaY < 0 ? 0.12 : -0.12;
     applyZoom(state.zoom + delta);
   },
   { passive: false }
@@ -1825,18 +1827,10 @@ window.addEventListener("DOMContentLoaded", () => {
     renderAll();
   }
   fitPlanToViewport();
-  requestAnimationFrame(fitPlanToViewport);
-  setTimeout(fitPlanToViewport, 120);
 });
-
-planImage.addEventListener("load", fitPlanToViewport);
-window.addEventListener("orientationchange", () =>
-  setTimeout(fitPlanToViewport, 150)
-);
 
 window.addEventListener("resize", () => {
   if (!isMobileViewport()) {
     closeMobileDrawers();
   }
-  fitPlanToViewport();
 });
