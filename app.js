@@ -200,18 +200,44 @@ function getCatalogSpec(typeId) {
 
 /**
  * Calcula el máximo de sillas por largo en mesas rectangulares:
- * - 1 mesa: máx 3 sillas por largo
- * - Mesas unidas: 7 sillas cada 2 mesas (ej: 2 mesas -> 7; 3 mesas -> 10; 4 mesas -> 14)
+ * - 1 mesa individual suelta: máx 3 sillas por largo
+ * - Mesas unidas en grupo: permite hasta 4 por módulo para cumplir 7 sillas cada 2 mesas (4 + 3 = 7)
  */
-function getMaxSeatsPerLongSide(joinedCount) {
+function getMaxSeatsPerLongSide(joinedCount, isFusedInGroup = false) {
   const n = Math.max(1, Math.round(joinedCount || 1));
-  return Math.floor(n / 2) * 7 + (n % 2) * 3;
+  if (n > 1) {
+    return Math.floor(n / 2) * 7 + (n % 2) * 3;
+  }
+  return isFusedInGroup ? 4 : 3;
+}
+
+function getGroupMembers(table) {
+  if (!table) return [];
+  if (!table.groupId) return [table];
+  return state.tables.filter((t) => t.groupId === table.groupId);
+}
+
+function cleanupOrphanGroups() {
+  const counts = new Map();
+  for (const t of state.tables) {
+    if (t.groupId) {
+      counts.set(t.groupId, (counts.get(t.groupId) || 0) + 1);
+    }
+  }
+  for (const t of state.tables) {
+    if (t.groupId && (counts.get(t.groupId) || 0) < 2) {
+      t.groupId = null;
+      t.fusedTo = null;
+    }
+  }
 }
 
 function normalizeTableConfig(table) {
   const spec = getCatalogSpec(table.typeId);
   if (spec.shape === "circle") {
     table.joinedCount = 1;
+    table.groupId = null;
+    table.fusedTo = null;
     const maxS = spec.maxSeats || 13;
     if (table.seats === undefined || table.seats > maxS) {
       table.seats = maxS;
@@ -219,16 +245,19 @@ function normalizeTableConfig(table) {
     table.seats = Math.max(0, Math.min(maxS, Math.round(table.seats)));
   } else {
     table.joinedCount = Math.max(1, Math.min(12, Math.round(table.joinedCount || 1)));
-    table.rectSides = table.rectSides === 1 ? 1 : 2;
-    const maxPerSide = getMaxSeatsPerLongSide(table.joinedCount);
+    table.rectSides =
+      table.rectSides === 1 ? 1 : table.rectSides === -1 ? -1 : 2;
+    const inGroup = Boolean(table.groupId);
+    const maxPerSide = getMaxSeatsPerLongSide(table.joinedCount, inGroup);
     if (table.seatsPerSide === undefined) {
-      table.seatsPerSide = maxPerSide;
+      table.seatsPerSide = getMaxSeatsPerLongSide(table.joinedCount, false);
     }
     table.seatsPerSide = Math.max(
       0,
       Math.min(maxPerSide, Math.round(table.seatsPerSide))
     );
-    table.seats = table.seatsPerSide * table.rectSides;
+    const activeSides = Math.abs(table.rectSides) === 1 ? 1 : 2;
+    table.seats = table.seatsPerSide * activeSides;
   }
 }
 
@@ -276,6 +305,30 @@ function getEffectiveDimensions(table) {
 
 function degToRad(deg) {
   return (deg * Math.PI) / 180;
+}
+
+function getTableLocalAxes(table) {
+  const rad = degToRad(table.rotation || 0);
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return {
+    uL: { x: cos, y: sin },
+    uW: { x: -sin, y: cos }
+  };
+}
+
+function isWorldPointInsideTableBase(wx, wy, table, marginPx = 2) {
+  const ppm = state.pxPerMeter;
+  const dim = getEffectiveDimensions(table);
+  if (dim.shape !== "rect") return false;
+  const axes = getTableLocalAxes(table);
+  const dx = wx - table.x;
+  const dy = wy - table.y;
+  const localL = dx * axes.uL.x + dy * axes.uL.y;
+  const localW = dx * axes.uW.x + dy * axes.uW.y;
+  const halfL = (dim.baseLength * ppm) / 2 + marginPx;
+  const halfW = (dim.baseWidth * ppm) / 2 + marginPx;
+  return Math.abs(localL) <= halfL && Math.abs(localW) <= halfW;
 }
 
 function getRectCornersMeters(cx, cy, length, width, angleDeg) {
@@ -486,6 +539,7 @@ function circleToRectDistance(cx, cy, r, rx, ry, rl, rw, rAngleDeg, swapOrder) {
 }
 
 function evaluateCollisions() {
+  cleanupOrphanGroups();
   const n = state.tables.length;
   const conflicts = [];
   const EPS = 0.001;
@@ -502,6 +556,13 @@ function evaluateCollisions() {
     for (let j = i + 1; j < n; j++) {
       const tA = state.tables[i];
       const tB = state.tables[j];
+
+      // Las mesas fusionadas dentro del mismo grupo (ej. forma en U, L o lineal)
+      // forman una única estructura compuesta y no generan conflicto entre sí.
+      if (tA.groupId && tB.groupId && tA.groupId === tB.groupId) {
+        continue;
+      }
+
       const res = computeTablePairDistanceMeters(tA, tB);
 
       if (res.distance < tA.nearestDist) {
@@ -533,12 +594,196 @@ function evaluateCollisions() {
 }
 
 /* ==========================================================================
-   FUSIÓN DE MESAS RECTANGULARES POR EL LADO ORIENTADO A LA MESA COLINDANTE
+   FUSIÓN DE MESAS RECTANGULARES MANTENIENDO SU ORIENTACIÓN (MESAS EN U / L / LINEALES)
    ========================================================================== */
 
 /**
- * Analiza la mesa rectangular más cercana (colindante) a `table` y determina
- * cuál de los 4 lados de `table` está orientado hacia esa mesa colindante.
+ * Calcula el acople exacto borde con borde entre `anchor` y `moving`
+ * manteniendo intacta la rotación de ambas mesas (`anchor.rotation` y `moving.rotation`).
+ */
+function computePairSnap(anchor, moving, forceSideKey = null, forceTangentMode = null) {
+  const ppm = state.pxPerMeter;
+  const dimA = getEffectiveDimensions(anchor);
+  const dimB = getEffectiveDimensions(moving);
+
+  const axesA = getTableLocalAxes(anchor);
+  const axesB = getTableLocalAxes(moving);
+
+  const halfLA = (dimA.baseLength * ppm) / 2;
+  const halfWA = (dimA.baseWidth * ppm) / 2;
+  const halfLB = (dimB.baseLength * ppm) / 2;
+  const halfWB = (dimB.baseWidth * ppm) / 2;
+
+  const dotLL = Math.abs(axesB.uL.x * axesA.uL.x + axesB.uL.y * axesA.uL.y);
+  const dotWL = Math.abs(axesB.uW.x * axesA.uL.x + axesB.uW.y * axesA.uL.y);
+  const dotLW = Math.abs(axesB.uL.x * axesA.uW.x + axesB.uL.y * axesA.uW.y);
+  const dotWW = Math.abs(axesB.uW.x * axesA.uW.x + axesB.uW.y * axesA.uW.y);
+
+  // Semianchos de B proyectados sobre los ejes L y W de A
+  const extentBL = halfLB * dotLL + halfWB * dotWL;
+  const extentBW = halfLB * dotLW + halfWB * dotWW;
+
+  const combinedL = halfLA + extentBL;
+  const combinedW = halfWA + extentBW;
+
+  const dx = moving.x - anchor.x;
+  const dy = moving.y - anchor.y;
+
+  const localL = dx * axesA.uL.x + dy * axesA.uL.y;
+  const localW = dx * axesA.uW.x + dy * axesA.uW.y;
+
+  const normL = Math.abs(localL) / Math.max(1, combinedL);
+  const normW = Math.abs(localW) / Math.max(1, combinedW);
+
+  let sideKey = forceSideKey;
+  let symmetricTangentMode = forceTangentMode;
+
+  // Si `anchor` ya tiene otra mesa perpendicular fusionada en su grupo (ej. primera pata de una U),
+  // mantener simetría automática al fusionar la segunda pata en el extremo opuesto.
+  if (!sideKey && anchor.groupId && dotLL < 0.35) {
+    const peers = getGroupMembers(anchor).filter(
+      (p) => p.id !== anchor.id && p.id !== moving.id
+    );
+    for (const peer of peers) {
+      const axesP = getTableLocalAxes(peer);
+      const peerDotLL = Math.abs(axesP.uL.x * axesA.uL.x + axesP.uL.y * axesA.uL.y);
+      if (peerDotLL < 0.35) {
+        const pdx = peer.x - anchor.x;
+        const pdy = peer.y - anchor.y;
+        const pLocalL = pdx * axesA.uL.x + pdy * axesA.uL.y;
+        const pLocalW = pdx * axesA.uW.x + pdy * axesA.uW.y;
+
+        if (pLocalL * localL < 0) {
+          if (Math.abs(pLocalL) > halfLA + 2) {
+            sideKey = localL >= 0 ? "right_end" : "left_end";
+            if (!symmetricTangentMode) {
+              symmetricTangentMode = pLocalW >= 0 ? "start" : "end";
+            }
+            break;
+          } else if (Math.abs(pLocalW) > halfWA + 2) {
+            sideKey = pLocalW >= 0 ? "bottom_side" : "top_side";
+            if (!symmetricTangentMode) {
+              symmetricTangentMode = localL >= 0 ? "end" : "start";
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (!sideKey) {
+    if (normL >= normW) {
+      sideKey = localL >= 0 ? "right_end" : "left_end";
+    } else {
+      sideKey = localW >= 0 ? "bottom_side" : "top_side";
+    }
+  }
+
+  let sideLabel;
+  let edgeSegmentLocal;
+  let edgeMidWorld;
+  let targetL;
+  let targetW;
+  let tangentMode = symmetricTangentMode || "start";
+
+  if (sideKey === "right_end" || sideKey === "left_end") {
+    const sign = sideKey === "right_end" ? 1 : -1;
+    sideLabel = sign > 0 ? "extremo derecho (+L)" : "extremo izquierdo (-L)";
+    const ex = sign * halfLA;
+    edgeSegmentLocal = { x1: ex, y1: -halfWA, x2: ex, y2: halfWA };
+    edgeMidWorld = {
+      x: anchor.x + ex * axesA.uL.x,
+      y: anchor.y + ex * axesA.uL.y
+    };
+    targetL = sign * combinedL;
+
+    const cStart = -halfWA + extentBW; // alinea borde -W (superior)
+    const cEnd = halfWA - extentBW; // alinea borde +W (inferior)
+    if (Math.abs(halfWA - extentBW) <= 2) {
+      targetW = 0;
+      tangentMode = "start";
+    } else if (symmetricTangentMode === "start") {
+      targetW = cStart;
+      tangentMode = "start";
+    } else if (symmetricTangentMode === "end") {
+      targetW = cEnd;
+      tangentMode = "end";
+    } else if (symmetricTangentMode === "center") {
+      targetW = 0;
+      tangentMode = "center";
+    } else {
+      // Si está de la mitad hacia abajo (+W), alinea borde superior para formar U hacia abajo; si está arriba, hacia arriba
+      const distStart = Math.abs(localW - cStart);
+      const distEnd = Math.abs(localW - cEnd);
+      if (distStart <= distEnd) {
+        targetW = cStart;
+        tangentMode = "start";
+      } else {
+        targetW = cEnd;
+        tangentMode = "end";
+      }
+    }
+  } else {
+    const sign = sideKey === "bottom_side" ? 1 : -1;
+    sideLabel = sign > 0 ? "lado inferior (+W)" : "lado superior (-W)";
+    const ey = sign * halfWA;
+    edgeSegmentLocal = { x1: -halfLA, y1: ey, x2: halfLA, y2: ey };
+    edgeMidWorld = {
+      x: anchor.x + ey * axesA.uW.x,
+      y: anchor.y + ey * axesA.uW.y
+    };
+    targetW = sign * combinedW;
+
+    const cStart = -halfLA + extentBL; // esquina izquierda (-L)
+    const cEnd = halfLA - extentBL; // esquina derecha (+L)
+    if (Math.abs(halfLA - extentBL) <= 2) {
+      targetL = 0;
+      tangentMode = "start";
+    } else if (symmetricTangentMode === "start") {
+      targetL = cStart;
+      tangentMode = "start";
+    } else if (symmetricTangentMode === "end") {
+      targetL = cEnd;
+      tangentMode = "end";
+    } else if (symmetricTangentMode === "center") {
+      targetL = 0;
+      tangentMode = "center";
+    } else {
+      if (localL < 0) {
+        targetL = cStart;
+        tangentMode = "start";
+      } else {
+        targetL = cEnd;
+        tangentMode = "end";
+      }
+    }
+  }
+
+  const relX = targetL * axesA.uL.x + targetW * axesA.uW.x;
+  const relY = targetL * axesA.uL.y + targetW * axesA.uW.y;
+
+  return {
+    anchor,
+    moving,
+    sideKey,
+    sideLabel,
+    tangentMode,
+    edgeSegmentLocal,
+    edgeMidWorld,
+    targetX: anchor.x + relX,
+    targetY: anchor.y + relY,
+    relX,
+    relY,
+    dotLL,
+    dimA,
+    dimB
+  };
+}
+
+/**
+ * Analiza la mesa rectangular más cercana a `table` que aún no esté fusionada con ella,
+ * y determina cuál de los 4 lados de `table` está orientado hacia esa mesa colindante.
  */
 function analyzeColindanteRect(table) {
   if (!table) return null;
@@ -552,6 +797,9 @@ function analyzeColindanteRect(table) {
     if (other.id === table.id) continue;
     const otherSpec = getCatalogSpec(other.typeId);
     if (otherSpec.shape !== "rect") continue;
+    if (table.groupId && other.groupId && table.groupId === other.groupId) {
+      continue;
+    }
     const res = computeTablePairDistanceMeters(table, other);
     if (res.distance < bestDist) {
       bestDist = res.distance;
@@ -561,78 +809,27 @@ function analyzeColindanteRect(table) {
 
   if (!bestOther) return null;
 
-  const ppm = state.pxPerMeter;
-  const dimA = getEffectiveDimensions(table);
-  const dimB = getEffectiveDimensions(bestOther);
-
-  const rad = degToRad(table.rotation || 0);
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-
-  // Vector desde el centro de A hacia el centro de B
-  const dx = bestOther.x - table.x;
-  const dy = bestOther.y - table.y;
-
-  // Proyecciones sobre los ejes locales de A (L = eje largo, W = eje ancho)
-  const localL = dx * cos + dy * sin;
-  const localW = -dx * sin + dy * cos;
-
-  const halfLA = (dimA.baseLength * ppm) / 2;
-  const halfWA = (dimA.baseWidth * ppm) / 2;
-
-  const normL = Math.abs(localL) / Math.max(1, halfLA);
-  const normW = Math.abs(localW) / Math.max(1, halfWA);
-
-  let sideKey;
-  let sideLabel;
-  let edgeSegmentLocal;
-  let edgeMidWorld;
-
-  if (normL >= normW) {
-    const sign = localL >= 0 ? 1 : -1;
-    sideKey = sign > 0 ? "right_end" : "left_end";
-    sideLabel = sign > 0 ? "extremo derecho (+L)" : "extremo izquierdo (-L)";
-    const ex = sign * halfLA;
-    edgeSegmentLocal = { x1: ex, y1: -halfWA, x2: ex, y2: halfWA };
-    edgeMidWorld = {
-      x: table.x + ex * cos,
-      y: table.y + ex * sin
-    };
-  } else {
-    const sign = localW >= 0 ? 1 : -1;
-    sideKey = sign > 0 ? "bottom_side" : "top_side";
-    sideLabel = sign > 0 ? "lado inferior (+W)" : "lado superior (-W)";
-    const ey = sign * halfWA;
-    edgeSegmentLocal = { x1: -halfLA, y1: ey, x2: halfLA, y2: ey };
-    edgeMidWorld = {
-      x: table.x - ey * sin,
-      y: table.y + ey * cos
-    };
-  }
+  const snapOnTable = computePairSnap(table, bestOther);
 
   return {
     table,
     other: bestOther,
     distanceMeters: bestDist,
-    localL,
-    localW,
-    sideKey,
-    sideLabel,
-    edgeSegmentLocal,
-    edgeMidWorld,
-    dimA,
-    dimB
+    sideKey: snapOnTable.sideKey,
+    sideLabel: snapOnTable.sideLabel,
+    tangentMode: snapOnTable.tangentMode,
+    edgeSegmentLocal: snapOnTable.edgeSegmentLocal,
+    edgeMidWorld: snapOnTable.edgeMidWorld,
+    dimA: snapOnTable.dimA,
+    dimB: snapOnTable.dimB
   };
 }
 
-/**
- * Si no hay ninguna mesa rectangular seleccionada, busca el par de mesas rectangulares
- * más cercanas entre sí en el plano para poder fusionarlas con 1 clic.
- */
 function findBestRectFusionTarget() {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel && getCatalogSpec(sel.typeId).shape === "rect") {
-    return analyzeColindanteRect(sel);
+    const info = analyzeColindanteRect(sel);
+    if (info) return info;
   }
 
   let bestInfo = null;
@@ -647,8 +844,8 @@ function findBestRectFusionTarget() {
 }
 
 /**
- * Fusiona `table` con su mesa rectangular colindante exactamente por el lado
- * que está orientado hacia dicha mesa colindante.
+ * Fusiona dos mesas rectangulares colindantes por su lado orientado,
+ * manteniendo cada mesa su propia orientación (permite formar mesas en U, en L o lineales).
  */
 function fuseWithColindanteRect(targetTable) {
   const info = targetTable
@@ -657,66 +854,201 @@ function fuseWithColindanteRect(targetTable) {
 
   if (!info || !info.other) {
     alert(
-      "Necesitas al menos 2 mesas rectangulares en el plano para fusionarlas por su lado colindante."
+      "Coloca al menos 2 mesas rectangulares que no estén ya fusionadas entre sí para acoplarlas por su lado orientado."
     );
     return;
   }
 
-  const { table, other, sideKey, dimB } = info;
-  const ppm = state.pxPerMeter;
-  const rad = degToRad(table.rotation || 0);
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
+  const groupA = getGroupMembers(info.table);
+  const groupB = getGroupMembers(info.other);
 
-  const otherLengthPx = dimB.baseLength * ppm;
-  const totalJoined = Math.min(
-    12,
-    Math.max(1, table.joinedCount || 1) + Math.max(1, other.joinedCount || 1)
-  );
+  // Si una de las mesas ya pertenece a un grupo más grande (ej. ya tiene 2 tramos de la U),
+  // ese grupo actúa como ancla fija y la mesa suelta se acopla a él.
+  let anchor = info.table;
+  let moving = info.other;
+  let movingGroup = groupB;
 
-  if (sideKey === "right_end" || sideKey === "left_end") {
-    // Crece desde el extremo orientado hacia la mesa colindante manteniendo fijo el extremo opuesto
-    const sign = sideKey === "right_end" ? 1 : -1;
-    table.x += sign * (otherLengthPx / 2) * cos;
-    table.y += sign * (otherLengthPx / 2) * sin;
-  } else {
-    // La mesa colindante está orientada hacia el lado superior o inferior (+W / -W):
-    // Orientamos el eje de unión hacia ese lado colindante y acoplamos la mesa en ese sentido
-    const sign = sideKey === "bottom_side" ? 1 : -1;
-    const dirX = -sin * sign;
-    const dirY = cos * sign;
-    table.rotation = ((table.rotation || 0) + 90) % 180;
-    table.x += dirX * (otherLengthPx / 2);
-    table.y += dirY * (otherLengthPx / 2);
+  if (groupB.length > groupA.length) {
+    anchor = info.other;
+    moving = info.table;
+    movingGroup = groupA;
+  } else if (groupA.length === 1 && groupB.length === 1) {
+    // Si ambas están sueltas, la mesa vecina sirve de ancla fija para que la mesa seleccionada encaje contra ella
+    anchor = info.other;
+    moving = info.table;
+    movingGroup = groupA;
   }
 
-  table.x = Math.max(30, Math.min(PLAN_WIDTH_PX - 30, table.x));
-  table.y = Math.max(30, Math.min(PLAN_HEIGHT_PX - 30, table.y));
-  table.joinedCount = totalJoined;
-  // Aplicar la regla de 7 sillas por largo cada 2 mesas
-  table.seatsPerSide = getMaxSeatsPerLongSide(totalJoined);
-  normalizeTableConfig(table);
+  const snap = computePairSnap(anchor, moving);
+  const shiftX = snap.targetX - moving.x;
+  const shiftY = snap.targetY - moving.y;
 
-  state.tables = state.tables.filter((t) => t.id !== other.id);
-  state.selectedId = table.id;
+  for (const m of movingGroup) {
+    m.x += shiftX;
+    m.y += shiftY;
+  }
+
+  const sharedGroupId =
+    anchor.groupId ||
+    moving.groupId ||
+    "grp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+
+  for (const m of [...groupA, ...groupB]) {
+    m.groupId = sharedGroupId;
+  }
+
+  moving.fusedTo = {
+    anchorId: anchor.id,
+    sideKey: snap.sideKey,
+    tangentMode: snap.tangentMode
+  };
+
+  // Si se unen alineadas extremo con extremo con la misma orientación, aplicar 7 sillas cada 2 mesas (4 + 3 = 7)
+  if (
+    snap.dotLL > 0.9 &&
+    (snap.sideKey === "right_end" || snap.sideKey === "left_end")
+  ) {
+    const collinearMembers = getGroupMembers(anchor).filter((t) => {
+      const ax = getTableLocalAxes(t);
+      const axA = getTableLocalAxes(anchor);
+      return Math.abs(ax.uL.x * axA.uL.x + ax.uL.y * axA.uL.y) > 0.9;
+    });
+    collinearMembers.sort((a, b) => a.x - b.x || a.y - b.y);
+    for (let i = 0; i < collinearMembers.length; i++) {
+      // Alterna 4 y 3 sillas por largo para que cada 2 mesas sumen 7 sillas por largo
+      collinearMembers[i].seatsPerSide = i % 2 === 0 && i + 1 < collinearMembers.length ? 4 : 3;
+      normalizeTableConfig(collinearMembers[i]);
+    }
+  } else {
+    for (const m of [...groupA, ...groupB]) {
+      normalizeTableConfig(m);
+    }
+  }
+
   saveToLocalStorage();
   renderAll();
 }
 
-function changeRectJoinedCount(table, delta) {
+/**
+ * Re-acopla una mesa fusionada cuando el usuario cambia su ángulo de rotación,
+ * manteniendo la esquina de unión con su mesa ancla.
+ */
+function reSnapFusedTableAfterRotation(table) {
+  if (!table || !table.groupId) return;
+  if (table.fusedTo && table.fusedTo.anchorId) {
+    const anchor = state.tables.find(
+      (t) => t.id === table.fusedTo.anchorId && t.groupId === table.groupId
+    );
+    if (anchor) {
+      const snap = computePairSnap(
+        anchor,
+        table,
+        table.fusedTo.sideKey,
+        table.fusedTo.tangentMode
+      );
+      table.x = snap.targetX;
+      table.y = snap.targetY;
+      table.fusedTo.sideKey = snap.sideKey;
+      table.fusedTo.tangentMode = snap.tangentMode;
+      return;
+    }
+  }
+  const child = state.tables.find(
+    (t) =>
+      t.groupId === table.groupId &&
+      t.fusedTo &&
+      t.fusedTo.anchorId === table.id
+  );
+  if (child && getGroupMembers(table).length === 2) {
+    const snap = computePairSnap(child, table);
+    table.x = snap.targetX;
+    table.y = snap.targetY;
+  }
+}
+
+/**
+ * Cambia la esquina de alineación (izquierda/arriba <-> derecha/abajo) de una mesa fusionada.
+ */
+function cycleFusedCornerAlignment(table) {
   if (!table) return;
-  const spec = getCatalogSpec(table.typeId);
-  if (spec.shape !== "rect") return;
+  if (!table.groupId) {
+    fuseWithColindanteRect(table);
+    return;
+  }
 
-  const currentJoined = Math.max(1, Math.round(table.joinedCount || 1));
-  const nextJoined = Math.max(1, Math.min(12, currentJoined + delta));
-  if (nextJoined === currentJoined) return;
+  let bondOwner = table;
+  if (!bondOwner.fusedTo || !bondOwner.fusedTo.anchorId) {
+    const child = state.tables.find(
+      (t) =>
+        t.groupId === table.groupId &&
+        t.fusedTo &&
+        t.fusedTo.anchorId === table.id
+    );
+    if (child) bondOwner = child;
+  }
 
-  table.joinedCount = nextJoined;
-  table.seatsPerSide = getMaxSeatsPerLongSide(nextJoined);
-  normalizeTableConfig(table);
-  saveToLocalStorage();
-  renderAll();
+  if (bondOwner.fusedTo && bondOwner.fusedTo.anchorId) {
+    const anchor = state.tables.find((t) => t.id === bondOwner.fusedTo.anchorId);
+    if (anchor) {
+      const nextMode =
+        bondOwner.fusedTo.tangentMode === "start" ? "end" : "start";
+      bondOwner.fusedTo.tangentMode = nextMode;
+      const snap = computePairSnap(
+        anchor,
+        bondOwner,
+        bondOwner.fusedTo.sideKey,
+        nextMode
+      );
+      bondOwner.x = snap.targetX;
+      bondOwner.y = snap.targetY;
+      saveToLocalStorage();
+      renderAll();
+    }
+  }
+}
+
+/**
+ * Separa la mesa seleccionada de su grupo de unión para poder moverla libremente.
+ */
+function separateTableFromGroup(table) {
+  if (!table) return;
+  if (table.groupId) {
+    const members = getGroupMembers(table).filter((t) => t.id !== table.id);
+    if (members.length > 0) {
+      const cx = members.reduce((s, t) => s + t.x, 0) / members.length;
+      const cy = members.reduce((s, t) => s + t.y, 0) / members.length;
+      const dx = table.x - cx;
+      const dy = table.y - cy;
+      const dist = Math.hypot(dx, dy) || 1;
+      table.x += (dx / dist) * 12;
+      table.y += (dy / dist) * 12;
+    }
+    table.groupId = null;
+    table.fusedTo = null;
+    for (const t of state.tables) {
+      if (t.fusedTo && t.fusedTo.anchorId === table.id) {
+        t.fusedTo = null;
+      }
+    }
+    cleanupOrphanGroups();
+    if (table.seatsPerSide > 3 && (table.joinedCount || 1) === 1) {
+      table.seatsPerSide = 3;
+    }
+    for (const t of state.tables) {
+      normalizeTableConfig(t);
+    }
+    saveToLocalStorage();
+    renderAll();
+    return;
+  }
+
+  if ((table.joinedCount || 1) > 1) {
+    table.joinedCount = Math.max(1, table.joinedCount - 1);
+    table.seatsPerSide = getMaxSeatsPerLongSide(table.joinedCount, false);
+    normalizeTableConfig(table);
+    saveToLocalStorage();
+    renderAll();
+  }
 }
 
 /* ==========================================================================
@@ -1054,6 +1386,44 @@ function renderDimensionsLayer() {
   dimensionsLayer.innerHTML = html;
 }
 
+function getFreeLongSideInterval(table, baseL, sideYLocal) {
+  if (!table.groupId) {
+    return { minX: -baseL / 2, maxX: baseL / 2, blockedAll: false };
+  }
+  const peers = getGroupMembers(table).filter((t) => t.id !== table.id);
+  if (peers.length === 0) {
+    return { minX: -baseL / 2, maxX: baseL / 2, blockedAll: false };
+  }
+
+  const axes = getTableLocalAxes(table);
+  const steps = 24;
+  const freeXs = [];
+  for (let i = 0; i <= steps; i++) {
+    const lx = -baseL / 2 + (i / steps) * baseL;
+    const wx = table.x + lx * axes.uL.x + sideYLocal * axes.uW.x;
+    const wy = table.y + lx * axes.uL.y + sideYLocal * axes.uW.y;
+    let covered = false;
+    for (const p of peers) {
+      if (isWorldPointInsideTableBase(wx, wy, p, 3)) {
+        covered = true;
+        break;
+      }
+    }
+    if (!covered) {
+      freeXs.push(lx);
+    }
+  }
+
+  if (freeXs.length < 3) {
+    return { minX: 0, maxX: 0, blockedAll: true };
+  }
+  return {
+    minX: freeXs[0],
+    maxX: freeXs[freeXs.length - 1],
+    blockedAll: false
+  };
+}
+
 function buildChairsSvg(table, dim, ppm, strokeColor) {
   if (!table.hasChairs || table.seats <= 0) return "";
   const chairDepthPx = (state.chairMode === "per_side" ? 0.42 : 0.23) * ppm;
@@ -1088,31 +1458,31 @@ function buildChairsSvg(table, dim, ppm, strokeColor) {
     if (perSide === 0) return "";
     const baseL = dim.baseLength * ppm;
     const baseW = dim.baseWidth * ppm;
-    const chairWidthPx = Math.min(0.42 * ppm, (baseL / perSide) * 0.72, 16);
     const offsetOut = chairDepthPx * 0.55;
 
-    for (let i = 0; i < perSide; i++) {
-      const x = -baseL / 2 + ((i + 0.5) / perSide) * baseL;
-      const y = -baseW / 2 - offsetOut;
-      html += `<rect x="${(x - chairWidthPx / 2).toFixed(1)}" y="${(
-        y -
-        chairDepthPx * 0.35
-      ).toFixed(1)}" width="${chairWidthPx.toFixed(1)}" height="${(
-        chairDepthPx * 0.7
-      ).toFixed(1)}" rx="2.5" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.92" />`;
-    }
-
-    if (table.rectSides !== 1) {
+    const drawSideChairs = (sideYLocal) => {
+      const interval = getFreeLongSideInterval(table, baseL, sideYLocal);
+      if (interval.blockedAll) return;
+      const spanL = interval.maxX - interval.minX;
+      if (spanL < 12) return;
+      const chairWidthPx = Math.min(0.42 * ppm, (spanL / perSide) * 0.72, 16);
       for (let i = 0; i < perSide; i++) {
-        const x = -baseL / 2 + ((i + 0.5) / perSide) * baseL;
-        const y = baseW / 2 + offsetOut;
+        const x = interval.minX + ((i + 0.5) / perSide) * spanL;
         html += `<rect x="${(x - chairWidthPx / 2).toFixed(1)}" y="${(
-          y -
+          sideYLocal -
           chairDepthPx * 0.35
         ).toFixed(1)}" width="${chairWidthPx.toFixed(1)}" height="${(
           chairDepthPx * 0.7
         ).toFixed(1)}" rx="2.5" fill="#ffffff" stroke="${strokeColor}" stroke-width="1.2" opacity="0.92" />`;
       }
+    };
+
+    const sidesMode = table.rectSides === 1 ? 1 : table.rectSides === -1 ? -1 : 2;
+    if (sidesMode === 2 || sidesMode === 1) {
+      drawSideChairs(-baseW / 2 - offsetOut);
+    }
+    if (sidesMode === 2 || sidesMode === -1) {
+      drawSideChairs(baseW / 2 + offsetOut);
     }
   }
   return html;
@@ -1121,49 +1491,96 @@ function buildChairsSvg(table, dim, ppm, strokeColor) {
 function renderTablesLayer() {
   tablesLayer.innerHTML = "";
   const ppm = state.pxPerMeter;
+  const selTable = state.tables.find((t) => t.id === state.selectedId);
+  const selectedGroupId = selTable && selTable.groupId ? selTable.groupId : null;
 
+  // Pasada 1: Halos, zonas de sillas y sillas (debajo de los tableros de madera para que las uniones en U o L se vean limpias)
   for (const table of state.tables) {
     const dim = getEffectiveDimensions(table);
-    const isSelected = table.id === state.selectedId;
     const isConflict = table.isConflict;
-
-    const fillColor = isConflict ? "var(--red-fill)" : "var(--green-fill)";
     const strokeColor = isConflict ? "var(--red-stroke)" : "var(--green-stroke)";
     const chairZoneFill = isConflict ? "var(--red-chair)" : "var(--green-chair)";
+    const halfClearancePx = (state.minClearance / 2) * ppm;
 
-    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    g.setAttribute(
-      "class",
-      `table-group ${isSelected ? "selected" : ""} ${isConflict ? "conflict" : ""}`
-    );
-    g.setAttribute(
+    const gUnder = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    gUnder.setAttribute("class", `table-group ${isConflict ? "conflict" : ""}`);
+    gUnder.setAttribute(
       "transform",
       `translate(${table.x.toFixed(1)}, ${table.y.toFixed(1)}) rotate(${(
         table.rotation || 0
       ).toFixed(1)})`
     );
-    g.dataset.id = table.id;
+    gUnder.dataset.id = table.id;
+
+    let underSvg = "";
+    if (dim.shape === "circle") {
+      const effR = dim.effRadius * ppm;
+      if (state.showClearanceHalo) {
+        underSvg += `<circle r="${(effR + halfClearancePx).toFixed(
+          1
+        )}" fill="none" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="2 3" opacity="0.55" />`;
+      }
+      if (table.hasChairs) {
+        underSvg += `<circle r="${effR.toFixed(
+          1
+        )}" fill="${chairZoneFill}" stroke="${strokeColor}" stroke-width="1.3" stroke-dasharray="4 2" />`;
+      }
+      underSvg += buildChairsSvg(table, dim, ppm, strokeColor);
+    } else {
+      const effL = dim.effLength * ppm;
+      const effW = dim.effWidth * ppm;
+      if (state.showClearanceHalo) {
+        const haloL = effL + halfClearancePx * 2;
+        const haloW = effW + halfClearancePx * 2;
+        underSvg += `<rect x="${(-haloL / 2).toFixed(1)}" y="${(
+          -haloW / 2
+        ).toFixed(1)}" width="${haloL.toFixed(1)}" height="${haloW.toFixed(
+          1
+        )}" rx="6" fill="none" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="2 3" opacity="0.55" />`;
+      }
+      if (table.hasChairs) {
+        underSvg += `<rect x="${(-effL / 2).toFixed(1)}" y="${(
+          -effW / 2
+        ).toFixed(1)}" width="${effL.toFixed(1)}" height="${effW.toFixed(
+          1
+        )}" rx="5" fill="${chairZoneFill}" stroke="${strokeColor}" stroke-width="1.3" stroke-dasharray="4 2" />`;
+      }
+      underSvg += buildChairsSvg(table, dim, ppm, strokeColor);
+    }
+
+    gUnder.innerHTML = underSvg;
+    tablesLayer.appendChild(gUnder);
+  }
+
+  // Pasada 2: Tableros de las mesas, etiquetas, bordes de grupo y controles de selección
+  for (const table of state.tables) {
+    const dim = getEffectiveDimensions(table);
+    const isSelected = table.id === state.selectedId;
+    const isSameGroupAsSelected =
+      !isSelected && selectedGroupId && table.groupId === selectedGroupId;
+    const isConflict = table.isConflict;
+
+    const fillColor = isConflict ? "var(--red-fill)" : "var(--green-fill)";
+    const strokeColor = isConflict ? "var(--red-stroke)" : "var(--green-stroke)";
+
+    const gTop = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    gTop.setAttribute(
+      "class",
+      `table-group ${isSelected ? "selected" : ""} ${isConflict ? "conflict" : ""}`
+    );
+    gTop.setAttribute(
+      "transform",
+      `translate(${table.x.toFixed(1)}, ${table.y.toFixed(1)}) rotate(${(
+        table.rotation || 0
+      ).toFixed(1)})`
+    );
+    gTop.dataset.id = table.id;
 
     let innerSvg = "";
-    const halfClearancePx = (state.minClearance / 2) * ppm;
 
     if (dim.shape === "circle") {
       const baseR = dim.baseRadius * ppm;
       const effR = dim.effRadius * ppm;
-
-      if (state.showClearanceHalo) {
-        innerSvg += `<circle r="${(effR + halfClearancePx).toFixed(
-          1
-        )}" fill="none" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="2 3" opacity="0.55" />`;
-      }
-
-      if (table.hasChairs) {
-        innerSvg += `<circle r="${effR.toFixed(
-          1
-        )}" fill="${chairZoneFill}" stroke="${strokeColor}" stroke-width="1.3" stroke-dasharray="4 2" />`;
-      }
-
-      innerSvg += buildChairsSvg(table, dim, ppm, strokeColor);
 
       innerSvg += `<circle r="${baseR.toFixed(
         1
@@ -1179,26 +1596,6 @@ function renderTablesLayer() {
       const baseW = dim.baseWidth * ppm;
       const effL = dim.effLength * ppm;
       const effW = dim.effWidth * ppm;
-
-      if (state.showClearanceHalo) {
-        const haloL = effL + halfClearancePx * 2;
-        const haloW = effW + halfClearancePx * 2;
-        innerSvg += `<rect x="${(-haloL / 2).toFixed(1)}" y="${(
-          -haloW / 2
-        ).toFixed(1)}" width="${haloL.toFixed(1)}" height="${haloW.toFixed(
-          1
-        )}" rx="6" fill="none" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="2 3" opacity="0.55" />`;
-      }
-
-      if (table.hasChairs) {
-        innerSvg += `<rect x="${(-effL / 2).toFixed(1)}" y="${(
-          -effW / 2
-        ).toFixed(1)}" width="${effL.toFixed(1)}" height="${effW.toFixed(
-          1
-        )}" rx="5" fill="${chairZoneFill}" stroke="${strokeColor}" stroke-width="1.3" stroke-dasharray="4 2" />`;
-      }
-
-      innerSvg += buildChairsSvg(table, dim, ppm, strokeColor);
 
       innerSvg += `<rect x="${(-baseL / 2).toFixed(1)}" y="${(
         -baseW / 2
@@ -1216,6 +1613,16 @@ function renderTablesLayer() {
             baseW / 2
           ).toFixed(1)}" stroke="#ffffff" stroke-width="1.6" stroke-dasharray="3 2" opacity="0.85" />`;
         }
+      }
+
+      if (isSameGroupAsSelected) {
+        innerSvg += `<rect x="${(-baseL / 2 - 2).toFixed(1)}" y="${(
+          -baseW / 2 - 2
+        ).toFixed(1)}" width="${(baseL + 4).toFixed(1)}" height="${(
+          baseW + 4
+        ).toFixed(
+          1
+        )}" rx="4" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-dasharray="4 2" opacity="0.85" />`;
       }
 
       if (isSelected) {
@@ -1255,6 +1662,7 @@ function renderTablesLayer() {
       }
     }
 
+    const groupBadge = table.groupId ? " 🔗" : "";
     const joinedBadge =
       dim.shape === "rect" && dim.joinedCount > 1 ? ` (×${dim.joinedCount})` : "";
     const seatsBadge = table.hasChairs ? ` · ${table.seats}🪑` : "";
@@ -1269,13 +1677,13 @@ function renderTablesLayer() {
     const counterRot = -(table.rotation || 0);
     innerSvg += `
       <g transform="rotate(${counterRot})" pointer-events="none">
-        <text x="0" y="-2" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2.5px;">${table.name}${joinedBadge}</text>
+        <text x="0" y="-2" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2.5px;">${table.name}${joinedBadge}${groupBadge}</text>
         <text x="0" y="9" text-anchor="middle" font-size="8" font-weight="700" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2px;">${dimText}</text>
       </g>
     `;
 
-    g.innerHTML = innerSvg;
-    tablesLayer.appendChild(g);
+    gTop.innerHTML = innerSvg;
+    tablesLayer.appendChild(gTop);
   }
 }
 
@@ -1358,7 +1766,7 @@ function renderConflictsLayer(conflicts) {
   // dibujar en el propio plano un botón interactivo "🔗 Fusionar" sobre el lado orientado
   if (sel && getCatalogSpec(sel.typeId).shape === "rect") {
     const colInfo = analyzeColindanteRect(sel);
-    if (colInfo && colInfo.other && colInfo.distanceMeters <= 2.5) {
+    if (colInfo && colInfo.other && colInfo.distanceMeters <= 3.0) {
       const x1 = colInfo.edgeMidWorld.x;
       const y1 = colInfo.edgeMidWorld.y;
       const x2 = colInfo.other.x;
@@ -1382,6 +1790,23 @@ function renderConflictsLayer(conflicts) {
       )}" height="22" rx="11" fill="#2563eb" stroke="#ffffff" stroke-width="1.5" />
             <text x="0" y="4" text-anchor="middle" font-size="10" font-weight="700" fill="#ffffff">${btnText}</text>
           </g>
+        </g>
+      `;
+    }
+
+    if (sel.groupId) {
+      const dimSel = getEffectiveDimensions(sel);
+      const sepY = sel.y + (Math.max(dimSel.effLength, dimSel.effWidth) * ppm) / 2 + 18;
+      const sepText = `🔓 Separar ${sel.name}`;
+      const sw = sepText.length * 6.0 + 16;
+      html += `
+        <g class="svg-separate-btn" data-separate-table="${sel.id}" style="cursor: pointer;" transform="translate(${sel.x.toFixed(
+        1
+      )}, ${Math.min(PLAN_HEIGHT_PX - 16, sepY).toFixed(1)})">
+          <rect x="${(-sw / 2).toFixed(1)}" y="-10" width="${sw.toFixed(
+        1
+      )}" height="20" rx="10" fill="#475569" stroke="#ffffff" stroke-width="1.4" />
+          <text x="0" y="3.5" text-anchor="middle" font-size="9.5" font-weight="700" fill="#ffffff">${sepText}</text>
         </g>
       `;
     }
@@ -1460,16 +1885,22 @@ function updateStatsAndInspector() {
 
     const spec = getCatalogSpec(sel.typeId);
     const dim = getEffectiveDimensions(sel);
+    const groupMembers = getGroupMembers(sel);
+    const isGrouped = Boolean(sel.groupId && groupMembers.length > 1);
 
-    quickBarTitle.textContent =
-      dim.shape === "rect" && dim.joinedCount > 1
-        ? `${sel.name} (×${dim.joinedCount})`
-        : sel.name;
+    quickBarTitle.textContent = isGrouped
+      ? `${sel.name} (🔗${groupMembers.length})`
+      : dim.shape === "rect" && dim.joinedCount > 1
+      ? `${sel.name} (×${dim.joinedCount})`
+      : sel.name;
     btnQuickChairs.classList.toggle("active", !!sel.hasChairs);
     btnQuickRotate.style.display = dim.shape === "rect" ? "inline-flex" : "none";
-    btnQuickJoin.style.display = dim.shape === "rect" ? "inline-flex" : "none";
+    btnQuickJoin.style.display =
+      dim.shape === "rect" && isGrouped ? "inline-flex" : "none";
     btnQuickUnjoin.style.display =
-      dim.shape === "rect" && dim.joinedCount > 1 ? "inline-flex" : "none";
+      dim.shape === "rect" && (isGrouped || dim.joinedCount > 1)
+        ? "inline-flex"
+        : "none";
 
     if (document.activeElement !== inpTableName) {
       inpTableName.value = sel.name;
@@ -1501,24 +1932,30 @@ function updateStatsAndInspector() {
       rectSeatsControls.style.display = "flex";
       rotationControls.style.display = "block";
 
-      lblJoinedCount.textContent =
-        dim.joinedCount === 1
-          ? "1 mesa individual"
-          : `${dim.joinedCount} mesas unidas`;
-      btnUnjoinRect.disabled = dim.joinedCount <= 1;
+      if (isGrouped) {
+        lblJoinedCount.textContent = `Grupo unido (${groupMembers.length} mesas)`;
+      } else if (dim.joinedCount > 1) {
+        lblJoinedCount.textContent = `${dim.joinedCount} tramos unidos`;
+      } else {
+        lblJoinedCount.textContent = "1 mesa suelta";
+      }
+
+      btnUnjoinRect.disabled = !isGrouped && dim.joinedCount <= 1;
+      btnJoinRect.disabled = !isGrouped;
 
       const colInfo = analyzeColindanteRect(sel);
       if (colInfo && colInfo.other) {
         btnMergeNearbyRect.disabled = false;
         btnMergeNearbyRect.textContent = `🔗 Fusionar con ${colInfo.other.name}`;
-        lblMergeSideInfo.innerHTML = `Se fusionará por el <strong>${colInfo.sideLabel}</strong> orientado hacia <strong>${colInfo.other.name}</strong>.`;
+        lblMergeSideInfo.innerHTML = `Se acoplará por el <strong>${colInfo.sideLabel}</strong> hacia <strong>${colInfo.other.name}</strong> manteniendo la orientación de cada mesa.`;
         btnQuickFuseNeighbor.style.display = "inline-flex";
         btnQuickFuseNeighbor.textContent = `🔗 Fusionar (${colInfo.other.name})`;
       } else {
         btnMergeNearbyRect.disabled = true;
         btnMergeNearbyRect.textContent = `🔗 Fusionar con mesa colindante`;
-        lblMergeSideInfo.textContent =
-          "Añade otra mesa rectangular al plano para fusionarlas por su lado orientado.";
+        lblMergeSideInfo.textContent = isGrouped
+          ? "Mesa ya unida al grupo. Añade otra mesa rectangular si deseas seguir ampliando la forma en U."
+          : "Añade otra mesa rectangular al plano para fusionarlas manteniendo su orientación.";
         btnQuickFuseNeighbor.style.display = "none";
       }
 
@@ -1529,16 +1966,17 @@ function updateStatsAndInspector() {
         dim.effWidth
       )}${sel.hasChairs ? " (con sillas)" : ""}`;
 
-      const maxPerSide = getMaxSeatsPerLongSide(dim.joinedCount);
+      const maxPerSide = getMaxSeatsPerLongSide(dim.joinedCount, isGrouped);
       lblRectPerSideMax.textContent = `Sillas por largo (máx. ${maxPerSide}):`;
       inpSeatsPerSide.max = String(maxPerSide);
       if (document.activeElement !== inpSeatsPerSide) {
         inpSeatsPerSide.value = sel.seatsPerSide;
       }
       selRectSides.value = String(sel.rectSides || 2);
+      const activeSides = Math.abs(sel.rectSides) === 1 ? 1 : 2;
       lblRectTotalSeats.textContent = sel.hasChairs
-        ? `${sel.seats} sillas (${sel.seatsPerSide} × ${sel.rectSides} ${
-            sel.rectSides === 1 ? "largo" : "largos"
+        ? `${sel.seats} sillas (${sel.seatsPerSide} × ${activeSides} ${
+            activeSides === 1 ? "largo" : "largos"
           })`
         : "0 (sillas desactivadas)";
 
@@ -1547,7 +1985,7 @@ function updateStatsAndInspector() {
     }
 
     if (!Number.isFinite(sel.nearestDist)) {
-      lblNearestDist.textContent = "Sin otras mesas";
+      lblNearestDist.textContent = "Sin otras mesas externas";
       lblNearestDist.style.color = "var(--text-muted)";
     } else if (sel.isConflict) {
       lblNearestDist.textContent = `${fmtMeters(
@@ -1570,13 +2008,14 @@ function updateStatsAndInspector() {
       const row = document.createElement("div");
       row.className = `table-row-item ${t.id === state.selectedId ? "selected" : ""}`;
       const dotClass = t.isConflict ? "red" : "green";
+      const grpStr = t.groupId ? " 🔗" : "";
       const joinedStr =
         spec.shape === "rect" && t.joinedCount > 1 ? ` (×${t.joinedCount})` : "";
       const chairTag = t.hasChairs ? `🪑 ${t.seats}` : `Sin sillas`;
       row.innerHTML = `
         <div style="display:flex;align-items:center;gap:7px;">
           <span class="dot ${dotClass}"></span>
-          <strong>${t.name}${joinedStr}</strong>
+          <strong>${t.name}${joinedStr}${grpStr}</strong>
           <span style="color:var(--text-muted);font-size:11px;">${spec.name.replace(/^\d+\.\s*/, "")}</span>
         </div>
         <span style="font-size:11px;color:var(--text-muted);">${chairTag}</span>
@@ -1660,6 +2099,18 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
     return;
   }
 
+  // Comprobar si se pulsó el botón flotante de separar en el propio SVG
+  const sepBtn = e.target.closest("[data-separate-table]");
+  if (sepBtn) {
+    e.stopPropagation();
+    const id = sepBtn.dataset.separateTable;
+    const table = state.tables.find((t) => t.id === id);
+    if (table) {
+      separateTableFromGroup(table);
+    }
+    return;
+  }
+
   activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
   if (activePointers.size === 2) {
@@ -1731,12 +2182,18 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
     const table = state.tables.find((t) => t.id === id);
     if (table) {
       state.selectedId = id;
+      const members = getGroupMembers(table);
       dragState = {
         type: "move",
         pointerId: e.pointerId,
         table,
-        offsetX: pt.x - table.x,
-        offsetY: pt.y - table.y
+        startPtX: pt.x,
+        startPtY: pt.y,
+        memberStarts: members.map((m) => ({
+          table: m,
+          startX: m.x,
+          startY: m.y
+        }))
       };
       canvasWrapper.setPointerCapture(e.pointerId);
       renderAll();
@@ -1784,14 +2241,18 @@ canvasWrapper.addEventListener("pointermove", (e) => {
   if (!dragState || dragState.pointerId !== e.pointerId) return;
 
   if (dragState.type === "move") {
-    dragState.table.x = Math.max(
-      25,
-      Math.min(PLAN_WIDTH_PX - 25, pt.x - dragState.offsetX)
-    );
-    dragState.table.y = Math.max(
-      25,
-      Math.min(PLAN_HEIGHT_PX - 25, pt.y - dragState.offsetY)
-    );
+    const dx = pt.x - dragState.startPtX;
+    const dy = pt.y - dragState.startPtY;
+    for (const item of dragState.memberStarts) {
+      item.table.x = Math.max(
+        25,
+        Math.min(PLAN_WIDTH_PX - 25, item.startX + dx)
+      );
+      item.table.y = Math.max(
+        25,
+        Math.min(PLAN_HEIGHT_PX - 25, item.startY + dy)
+      );
+    }
     renderAll();
   } else if (dragState.type === "rotate") {
     const dx = pt.x - dragState.table.x;
@@ -1801,6 +2262,7 @@ canvasWrapper.addEventListener("pointermove", (e) => {
     const snap15 = Math.round(deg / 15) * 15;
     if (Math.abs(deg - snap15) < 3) deg = snap15 % 180;
     dragState.table.rotation = deg;
+    reSnapFusedTableAfterRotation(dragState.table);
     renderAll();
   } else if (dragState.type === "pan") {
     const dx = e.clientX - dragState.startX;
@@ -1990,7 +2452,10 @@ inpTableSeats.addEventListener("input", () => {
 inpSeatsPerSide.addEventListener("input", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel) {
-    const maxPerSide = getMaxSeatsPerLongSide(sel.joinedCount || 1);
+    const maxPerSide = getMaxSeatsPerLongSide(
+      sel.joinedCount || 1,
+      Boolean(sel.groupId)
+    );
     sel.seatsPerSide = Math.max(
       0,
       Math.min(maxPerSide, parseInt(inpSeatsPerSide.value, 10) || 0)
@@ -2005,7 +2470,8 @@ inpSeatsPerSide.addEventListener("input", () => {
 selRectSides.addEventListener("change", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel) {
-    sel.rectSides = parseInt(selRectSides.value, 10) === 1 ? 1 : 2;
+    const val = parseInt(selRectSides.value, 10);
+    sel.rectSides = val === 1 ? 1 : val === -1 ? -1 : 2;
     normalizeTableConfig(sel);
     saveToLocalStorage();
     renderAll();
@@ -2032,18 +2498,19 @@ btnQuickFuseNeighbor.addEventListener("click", () => {
 
 btnJoinRect.addEventListener("click", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
-  changeRectJoinedCount(sel, 1);
+  cycleFusedCornerAlignment(sel);
 });
 
 btnUnjoinRect.addEventListener("click", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
-  changeRectJoinedCount(sel, -1);
+  separateTableFromGroup(sel);
 });
 
 rngTableRotation.addEventListener("input", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel) {
     sel.rotation = parseFloat(rngTableRotation.value) || 0;
+    reSnapFusedTableAfterRotation(sel);
     saveToLocalStorage();
     renderAll();
   }
@@ -2054,6 +2521,7 @@ document.querySelectorAll(".quick-angles .btn").forEach((btn) => {
     const sel = state.tables.find((t) => t.id === state.selectedId);
     if (sel) {
       sel.rotation = parseFloat(btn.dataset.angle) || 0;
+      reSnapFusedTableAfterRotation(sel);
       saveToLocalStorage();
       renderAll();
     }
@@ -2078,18 +2546,19 @@ btnQuickChairs.addEventListener("click", () => {
 
 btnQuickJoin.addEventListener("click", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
-  changeRectJoinedCount(sel, 1);
+  cycleFusedCornerAlignment(sel);
 });
 
 btnQuickUnjoin.addEventListener("click", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
-  changeRectJoinedCount(sel, -1);
+  separateTableFromGroup(sel);
 });
 
 btnQuickRotate.addEventListener("click", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel) {
     sel.rotation = ((sel.rotation || 0) + 45) % 180;
+    reSnapFusedTableAfterRotation(sel);
     saveToLocalStorage();
     renderAll();
   }
@@ -2169,6 +2638,7 @@ window.addEventListener("keydown", (e) => {
     const sel = state.tables.find((t) => t.id === state.selectedId);
     if (sel) {
       sel.rotation = ((sel.rotation || 0) + 45) % 180;
+      reSnapFusedTableAfterRotation(sel);
       saveToLocalStorage();
       renderAll();
     }
@@ -2220,8 +2690,47 @@ function loadFromLocalStorage() {
       state.defaultAddChairs =
         data.defaultAddChairs !== undefined ? data.defaultAddChairs : true;
       state.nextCounter = data.nextCounter || data.tables.length + 1;
-      state.tables = data.tables;
-      for (const t of state.tables) normalizeTableConfig(t);
+
+      const expandedTables = [];
+      for (const t of data.tables) {
+        const spec = getCatalogSpec(t.typeId);
+        const k = Math.max(1, Math.round(t.joinedCount || 1));
+        if (spec.shape === "rect" && k > 1) {
+          const grpId =
+            t.groupId ||
+            "grp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+          const unitLPx = spec.length * state.pxPerMeter;
+          const axes = getTableLocalAxes(t);
+          let prevId = null;
+          for (let i = 0; i < k; i++) {
+            const offset = (i - (k - 1) / 2) * unitLPx;
+            const pieceId =
+              i === 0
+                ? t.id
+                : "t_" + Date.now() + "_" + i + "_" + Math.random().toString(36).slice(2, 5);
+            const piece = {
+              ...t,
+              id: pieceId,
+              name: i === 0 ? t.name : `${t.name}-${i + 1}`,
+              x: t.x + offset * axes.uL.x,
+              y: t.y + offset * axes.uL.y,
+              joinedCount: 1,
+              groupId: grpId,
+              seatsPerSide: i % 2 === 0 && i + 1 < k ? 4 : 3,
+              fusedTo: prevId
+                ? { anchorId: prevId, sideKey: "right_end", tangentMode: "start" }
+                : null
+            };
+            normalizeTableConfig(piece);
+            expandedTables.push(piece);
+            prevId = pieceId;
+          }
+        } else {
+          normalizeTableConfig(t);
+          expandedTables.push(t);
+        }
+      }
+      state.tables = expandedTables;
 
       inpHallWidth.value = (DEFAULT_HALL_WIDTH_PX / state.pxPerMeter).toFixed(2);
       inpMinClearance.value = state.minClearance.toFixed(2);
@@ -2243,9 +2752,9 @@ function loadSampleLayout() {
     y: 125,
     rotation: 0,
     hasChairs: true,
-    joinedCount: 2,
+    joinedCount: 1,
     rectSides: 1,
-    seatsPerSide: 7
+    seatsPerSide: 3
   });
 
   addTable("round_lg", { name: "M1", x: 185, y: 270, hasChairs: true, seats: 13 });

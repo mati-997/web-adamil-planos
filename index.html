@@ -233,10 +233,10 @@
       <!-- Barra de acciones rápidas en móvil cuando hay una mesa seleccionada -->
       <div class="mobile-quick-bar" id="mobileQuickBar">
         <span class="quick-bar-title" id="quickBarTitle">M1</span>
-        <button class="btn btn-primary" id="btnQuickFuseNeighbor" type="button" title="Fusionar con mesa rectangular colindante">🔗 Fusionar</button>
+        <button class="btn btn-primary" id="btnQuickFuseNeighbor" type="button" title="Fusionar con mesa rectangular colindante manteniendo orientación">🔗 Fusionar</button>
+        <button class="btn" id="btnQuickUnjoin" type="button" title="Separar mesa de la unión">🔓 Separar</button>
         <button class="btn" id="btnQuickChairs" type="button" title="Con/sin sillas (+0,5m)">🪑 Sillas</button>
-        <button class="btn" id="btnQuickJoin" type="button" title="Añadir tramo rectangular (+1)">+1</button>
-        <button class="btn" id="btnQuickUnjoin" type="button" title="Separar un tramo rectangular (-1)">-1</button>
+        <button class="btn" id="btnQuickJoin" type="button" title="Cambiar esquina de acople">⇄ Esquina</button>
         <button class="btn" id="btnQuickRotate" type="button" title="Rotar +45°">↻ 45°</button>
         <button class="btn" id="btnQuickDup" type="button" title="Duplicar mesa">📋</button>
         <button class="btn btn-danger" id="btnQuickDel" type="button" title="Borrar mesa">🗑️</button>
@@ -277,27 +277,27 @@
             <strong id="lblTableType" style="font-size: 12px; text-align: right;">-</strong>
           </div>
 
-          <!-- Controles de Fusión y Unión de Mesas Rectangulares -->
+          <!-- Controles de Fusión y Unión de Mesas Rectangulares (manteniendo orientación para forma en U / L / lineal) -->
           <div id="rectJoinControls" class="join-box" style="display: none;">
             <div class="control-row" style="margin-bottom: 6px;">
-              <span>🔗 Tramos unidos:</span>
-              <strong id="lblJoinedCount" style="color: var(--primary);">1 mesa</strong>
+              <span>🔗 Unión de mesas:</span>
+              <strong id="lblJoinedCount" style="color: var(--primary);">Individual</strong>
             </div>
 
-            <!-- Botón principal para fusionar con la mesa rectangular colindante por el lado orientado a ella -->
+            <!-- Botón principal para fusionar con la mesa rectangular colindante manteniendo la orientación de cada una -->
             <button class="btn btn-primary" id="btnMergeNearbyRect" type="button" style="width: 100%; justify-content: center; margin-bottom: 6px; font-size: 12px;">
               🔗 Fusionar con mesa colindante
             </button>
             <div id="lblMergeSideInfo" style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-align: center;">
-              Coloca otra mesa rectangular cerca para fusionarlas por su lado orientado.
+              Acopla las mesas por su lado orientado manteniendo el ángulo de cada mesa (permite forma de U, L o lineal).
             </div>
 
             <div style="display: flex; gap: 6px;">
               <button class="btn" id="btnUnjoinRect" type="button" style="flex: 1; justify-content: center; font-size: 11.5px;">
-                ➖ Separar (-1)
+                🔓 Separar mesa
               </button>
-              <button class="btn" id="btnJoinRect" type="button" style="flex: 1; justify-content: center; font-size: 11.5px;">
-                ➕ Alargar (+1)
+              <button class="btn" id="btnJoinRect" type="button" style="flex: 1; justify-content: center; font-size: 11.5px;" title="Cambiar la esquina o alineación del acople">
+                ⇄ Cambiar esquina
               </button>
             </div>
           </div>
@@ -329,13 +329,14 @@
           <div id="rectSeatsControls" style="display: none; flex-direction: column; gap: 8px; background: #f8fafc; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color);">
             <div class="control-row" style="margin-bottom: 0;">
               <span id="lblRectPerSideMax">Sillas por largo (máx. 3):</span>
-              <input type="number" id="inpSeatsPerSide" min="0" max="3" step="1" style="width: 68px;" />
+              <input type="number" id="inpSeatsPerSide" min="0" max="4" step="1" style="width: 68px;" />
             </div>
             <div class="control-row" style="margin-bottom: 0;">
               <span>Lados largos:</span>
               <select id="selRectSides" style="flex: 1;">
                 <option value="2">Ambos largos (×2)</option>
-                <option value="1">1 solo largo (×1)</option>
+                <option value="1">1 solo largo · Lado A (×1)</option>
+                <option value="-1">1 solo largo · Lado B (×1)</option>
               </select>
             </div>
             <div class="control-row" style="margin-bottom: 0; font-size: 11.5px; color: var(--text-muted);">
