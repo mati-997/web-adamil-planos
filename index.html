@@ -233,7 +233,9 @@
       <!-- Barra de acciones rápidas en móvil cuando hay una mesa seleccionada -->
       <div class="mobile-quick-bar" id="mobileQuickBar">
         <span class="quick-bar-title" id="quickBarTitle">M1</span>
-        <button class="btn btn-primary" id="btnQuickFuseNeighbor" type="button" title="Fusionar con mesa rectangular colindante manteniendo orientación">🔗 Fusionar</button>
+        <button class="btn btn-primary" id="btnQuickFuseLeft" type="button" title="Fusionar hacia el lado izquierdo">⬅️ Izq.</button>
+        <button class="btn btn-primary" id="btnQuickFuseRight" type="button" title="Fusionar hacia el lado derecho">Dcha. ➡️</button>
+        <button class="btn btn-primary" id="btnQuickFuseNeighbor" type="button" title="Fusionar automático por lado orientado">🔗 Auto</button>
         <button class="btn" id="btnQuickUnjoin" type="button" title="Separar mesa de la unión">🔓 Separar</button>
         <button class="btn" id="btnQuickChairs" type="button" title="Con/sin sillas (+0,5m)">🪑 Sillas</button>
         <button class="btn" id="btnQuickJoin" type="button" title="Cambiar esquina de acople">⇄ Esquina</button>
@@ -284,12 +286,22 @@
               <strong id="lblJoinedCount" style="color: var(--primary);">Individual</strong>
             </div>
 
-            <!-- Botón principal para fusionar con la mesa rectangular colindante manteniendo la orientación de cada una -->
-            <button class="btn btn-primary" id="btnMergeNearbyRect" type="button" style="width: 100%; justify-content: center; margin-bottom: 6px; font-size: 12px;">
-              🔗 Fusionar con mesa colindante
+            <!-- Botones directos para fusionar hacia la izquierda o hacia la derecha -->
+            <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+              <button class="btn btn-primary" id="btnFuseLeft" type="button" style="flex: 1; justify-content: center; font-size: 11.5px;" title="Fusionar o acoplar hacia el lado izquierdo">
+                ⬅️ Fusionar Izq.
+              </button>
+              <button class="btn btn-primary" id="btnFuseRight" type="button" style="flex: 1; justify-content: center; font-size: 11.5px;" title="Fusionar o acoplar hacia el lado derecho">
+                Fusionar Dcha. ➡️
+              </button>
+            </div>
+
+            <!-- Botón para fusionar automáticamente por el lado orientado a la mesa colindante -->
+            <button class="btn" id="btnMergeNearbyRect" type="button" style="width: 100%; justify-content: center; margin-bottom: 6px; font-size: 11.5px;">
+              🔗 Fusionar por lado orientado (Auto)
             </button>
             <div id="lblMergeSideInfo" style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-align: center;">
-              Acopla las mesas por su lado orientado manteniendo el ángulo de cada mesa (permite forma de U, L o lineal).
+              Puedes fusionar hacia el lado izquierdo o derecho manteniendo el ángulo de cada mesa.
             </div>
 
             <div style="display: flex; gap: 6px;">

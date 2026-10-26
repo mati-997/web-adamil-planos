@@ -149,6 +149,8 @@ const lblJoinedCount = document.getElementById("lblJoinedCount");
 const btnJoinRect = document.getElementById("btnJoinRect");
 const btnUnjoinRect = document.getElementById("btnUnjoinRect");
 const btnMergeNearbyRect = document.getElementById("btnMergeNearbyRect");
+const btnFuseLeft = document.getElementById("btnFuseLeft");
+const btnFuseRight = document.getElementById("btnFuseRight");
 const lblMergeSideInfo = document.getElementById("lblMergeSideInfo");
 const btnTopFuseRect = document.getElementById("btnTopFuseRect");
 
@@ -179,6 +181,8 @@ const btnNavScale = document.getElementById("btnNavScale");
 const mobileQuickBar = document.getElementById("mobileQuickBar");
 const quickBarTitle = document.getElementById("quickBarTitle");
 const btnQuickFuseNeighbor = document.getElementById("btnQuickFuseNeighbor");
+const btnQuickFuseLeft = document.getElementById("btnQuickFuseLeft");
+const btnQuickFuseRight = document.getElementById("btnQuickFuseRight");
 const btnQuickChairs = document.getElementById("btnQuickChairs");
 const btnQuickJoin = document.getElementById("btnQuickJoin");
 const btnQuickUnjoin = document.getElementById("btnQuickUnjoin");
@@ -598,10 +602,67 @@ function evaluateCollisions() {
    ========================================================================== */
 
 /**
+ * Obtiene los vectores normales (hacia afuera) en coordenadas de pantalla para los 4 bordes de `table`.
+ */
+function getTableEdgesWorld(table) {
+  const axes = getTableLocalAxes(table);
+  return [
+    { key: "right_end", nx: axes.uL.x, ny: axes.uL.y },
+    { key: "left_end", nx: -axes.uL.x, ny: -axes.uL.y },
+    { key: "bottom_side", nx: axes.uW.x, ny: axes.uW.y },
+    { key: "top_side", nx: -axes.uW.x, ny: -axes.uW.y }
+  ];
+}
+
+/**
+ * Traduce una dirección del plano ("left", "right", "top", "bottom") al `sideKey` local de `table`
+ * cuyo borde apunta en esa dirección del mundo, sin importar el ángulo de rotación de la mesa.
+ */
+function getWorldSideKey(table, worldDir) {
+  if (!worldDir || worldDir === "auto") return null;
+  if (
+    worldDir === "right_end" ||
+    worldDir === "left_end" ||
+    worldDir === "bottom_side" ||
+    worldDir === "top_side"
+  ) {
+    return worldDir;
+  }
+
+  const edges = getTableEdgesWorld(table);
+  if (worldDir === "left") {
+    return edges.reduce((best, e) => (e.nx < best.nx ? e : best), edges[0]).key;
+  }
+  if (worldDir === "right") {
+    return edges.reduce((best, e) => (e.nx > best.nx ? e : best), edges[0]).key;
+  }
+  if (worldDir === "top") {
+    return edges.reduce((best, e) => (e.ny < best.ny ? e : best), edges[0]).key;
+  }
+  if (worldDir === "bottom") {
+    return edges.reduce((best, e) => (e.ny > best.ny ? e : best), edges[0]).key;
+  }
+  return null;
+}
+
+function getWorldSideLabelFromNormal(nx, ny) {
+  if (Math.abs(nx) >= Math.abs(ny)) {
+    return nx < 0 ? "lado izquierdo" : "lado derecho";
+  }
+  return ny < 0 ? "lado superior" : "lado inferior";
+}
+
+/**
  * Calcula el acople exacto borde con borde entre `anchor` y `moving`
  * manteniendo intacta la rotación de ambas mesas (`anchor.rotation` y `moving.rotation`).
+ * Soporta forzar el lado ("left", "right", "top", "bottom" o clave local).
  */
-function computePairSnap(anchor, moving, forceSideKey = null, forceTangentMode = null) {
+function computePairSnap(
+  anchor,
+  moving,
+  forceSideKey = null,
+  forceTangentMode = null
+) {
   const ppm = state.pxPerMeter;
   const dimA = getEffectiveDimensions(anchor);
   const dimB = getEffectiveDimensions(moving);
@@ -635,40 +696,42 @@ function computePairSnap(anchor, moving, forceSideKey = null, forceTangentMode =
   const normL = Math.abs(localL) / Math.max(1, combinedL);
   const normW = Math.abs(localW) / Math.max(1, combinedW);
 
-  let sideKey = forceSideKey;
+  let sideKey = getWorldSideKey(anchor, forceSideKey);
   let symmetricTangentMode = forceTangentMode;
 
-  // Si `anchor` ya tiene otra mesa perpendicular fusionada en su grupo (ej. primera pata de una U),
-  // mantener simetría automática al fusionar la segunda pata en el extremo opuesto.
-  if (!sideKey && anchor.groupId && dotLL < 0.35) {
-    const peers = getGroupMembers(anchor).filter(
-      (p) => p.id !== anchor.id && p.id !== moving.id
-    );
+  const peers = anchor.groupId
+    ? getGroupMembers(anchor).filter(
+        (p) => p.id !== anchor.id && p.id !== moving.id
+      )
+    : [];
+
+  // Si `anchor` y `moving` son perpendiculares (ej. formando una L o una U):
+  if (dotLL < 0.5) {
+    // Si ya hay otra pata perpendicular en el grupo de `anchor`, heredar su alineación de esquina
     for (const peer of peers) {
       const axesP = getTableLocalAxes(peer);
-      const peerDotLL = Math.abs(axesP.uL.x * axesA.uL.x + axesP.uL.y * axesA.uL.y);
-      if (peerDotLL < 0.35) {
-        const pdx = peer.x - anchor.x;
-        const pdy = peer.y - anchor.y;
-        const pLocalL = pdx * axesA.uL.x + pdy * axesA.uL.y;
-        const pLocalW = pdx * axesA.uW.x + pdy * axesA.uW.y;
-
-        if (pLocalL * localL < 0) {
-          if (Math.abs(pLocalL) > halfLA + 2) {
-            sideKey = localL >= 0 ? "right_end" : "left_end";
-            if (!symmetricTangentMode) {
-              symmetricTangentMode = pLocalW >= 0 ? "start" : "end";
-            }
-            break;
-          } else if (Math.abs(pLocalW) > halfWA + 2) {
-            sideKey = pLocalW >= 0 ? "bottom_side" : "top_side";
-            if (!symmetricTangentMode) {
-              symmetricTangentMode = localL >= 0 ? "end" : "start";
-            }
-            break;
+      const peerDotLL = Math.abs(
+        axesP.uL.x * axesA.uL.x + axesP.uL.y * axesA.uL.y
+      );
+      if (peerDotLL < 0.5) {
+        if (!symmetricTangentMode && peer.fusedTo && peer.fusedTo.tangentMode) {
+          symmetricTangentMode = peer.fusedTo.tangentMode;
+        }
+        if (!sideKey) {
+          const leftSideKey = getWorldSideKey(anchor, "left");
+          const rightSideKey = getWorldSideKey(anchor, "right");
+          if (peer.x < anchor.x - 4) {
+            sideKey = rightSideKey;
+          } else if (peer.x > anchor.x + 4) {
+            sideKey = leftSideKey;
           }
         }
       }
+    }
+
+    // En modo automático para mesas perpendiculares, acoplar al lado izquierdo o derecho según posición X
+    if (!sideKey) {
+      sideKey = getWorldSideKey(anchor, moving.x < anchor.x ? "left" : "right");
     }
   }
 
@@ -689,7 +752,9 @@ function computePairSnap(anchor, moving, forceSideKey = null, forceTangentMode =
 
   if (sideKey === "right_end" || sideKey === "left_end") {
     const sign = sideKey === "right_end" ? 1 : -1;
-    sideLabel = sign > 0 ? "extremo derecho (+L)" : "extremo izquierdo (-L)";
+    const nx = sign * axesA.uL.x;
+    const ny = sign * axesA.uL.y;
+    sideLabel = getWorldSideLabelFromNormal(nx, ny);
     const ex = sign * halfLA;
     edgeSegmentLocal = { x1: ex, y1: -halfWA, x2: ex, y2: halfWA };
     edgeMidWorld = {
@@ -698,8 +763,17 @@ function computePairSnap(anchor, moving, forceSideKey = null, forceTangentMode =
     };
     targetL = sign * combinedL;
 
-    const cStart = -halfWA + extentBW; // alinea borde -W (superior)
-    const cEnd = halfWA - extentBW; // alinea borde +W (inferior)
+    const signW =
+      Math.abs(axesA.uW.y) >= Math.abs(axesA.uW.x)
+        ? axesA.uW.y >= 0
+          ? 1
+          : -1
+        : axesA.uW.x >= 0
+        ? 1
+        : -1;
+    const cStart = signW * (-halfWA + extentBW); // alinea borde superior/izquierdo del mundo
+    const cEnd = signW * (halfWA - extentBW); // alinea borde inferior/derecho del mundo
+
     if (Math.abs(halfWA - extentBW) <= 2) {
       targetW = 0;
       tangentMode = "start";
@@ -713,20 +787,21 @@ function computePairSnap(anchor, moving, forceSideKey = null, forceTangentMode =
       targetW = 0;
       tangentMode = "center";
     } else {
-      // Si está de la mitad hacia abajo (+W), alinea borde superior para formar U hacia abajo; si está arriba, hacia arriba
-      const distStart = Math.abs(localW - cStart);
-      const distEnd = Math.abs(localW - cEnd);
-      if (distStart <= distEnd) {
-        targetW = cStart;
-        tangentMode = "start";
-      } else {
+      // Por defecto en mesas en U/L alinea el borde superior (U abierta hacia abajo)
+      // salvo que la mesa móvil esté claramente por encima de la mesa ancla
+      if (moving.y < anchor.y - halfWA) {
         targetW = cEnd;
         tangentMode = "end";
+      } else {
+        targetW = cStart;
+        tangentMode = "start";
       }
     }
   } else {
     const sign = sideKey === "bottom_side" ? 1 : -1;
-    sideLabel = sign > 0 ? "lado inferior (+W)" : "lado superior (-W)";
+    const nx = sign * axesA.uW.x;
+    const ny = sign * axesA.uW.y;
+    sideLabel = getWorldSideLabelFromNormal(nx, ny);
     const ey = sign * halfWA;
     edgeSegmentLocal = { x1: -halfLA, y1: ey, x2: halfLA, y2: ey };
     edgeMidWorld = {
@@ -735,8 +810,17 @@ function computePairSnap(anchor, moving, forceSideKey = null, forceTangentMode =
     };
     targetW = sign * combinedW;
 
-    const cStart = -halfLA + extentBL; // esquina izquierda (-L)
-    const cEnd = halfLA - extentBL; // esquina derecha (+L)
+    const signL =
+      Math.abs(axesA.uL.x) >= Math.abs(axesA.uL.y)
+        ? axesA.uL.x >= 0
+          ? 1
+          : -1
+        : axesA.uL.y >= 0
+        ? 1
+        : -1;
+    const cStart = signL * (-halfLA + extentBL); // esquina izquierda/superior del mundo
+    const cEnd = signL * (halfLA - extentBL); // esquina derecha/inferior del mundo
+
     if (Math.abs(halfLA - extentBL) <= 2) {
       targetL = 0;
       tangentMode = "start";
@@ -750,7 +834,11 @@ function computePairSnap(anchor, moving, forceSideKey = null, forceTangentMode =
       targetL = 0;
       tangentMode = "center";
     } else {
-      if (localL < 0) {
+      if (
+        Math.abs(axesA.uL.x) >= Math.abs(axesA.uL.y)
+          ? moving.x < anchor.x
+          : moving.y < anchor.y
+      ) {
         targetL = cStart;
         tangentMode = "start";
       } else {
@@ -782,10 +870,43 @@ function computePairSnap(anchor, moving, forceSideKey = null, forceTangentMode =
 }
 
 /**
- * Analiza la mesa rectangular más cercana a `table` que aún no esté fusionada con ella,
- * y determina cuál de los 4 lados de `table` está orientado hacia esa mesa colindante.
+ * Elige qué mesa de un grupo debe actuar como ancla principal al acoplar `moving`.
+ * Si `moving` es vertical, prioriza la mesa horizontal del grupo (travesaño de la U).
  */
-function analyzeColindanteRect(table) {
+function chooseAnchorInGroup(groupMembers, moving) {
+  if (!groupMembers || groupMembers.length === 0) return null;
+  if (groupMembers.length === 1) return groupMembers[0];
+
+  const axesM = getTableLocalAxes(moving);
+  const movingIsVertical = Math.abs(axesM.uL.y) > Math.abs(axesM.uL.x);
+
+  if (movingIsVertical) {
+    const horizontalMembers = groupMembers.filter((m) => {
+      const ax = getTableLocalAxes(m);
+      return Math.abs(ax.uL.x) >= Math.abs(ax.uL.y);
+    });
+    if (horizontalMembers.length > 0) {
+      return horizontalMembers[0];
+    }
+  }
+
+  let best = groupMembers[0];
+  let bestD = Infinity;
+  for (const m of groupMembers) {
+    const d = Math.hypot(m.x - moving.x, m.y - moving.y);
+    if (d < bestD) {
+      bestD = d;
+      best = m;
+    }
+  }
+  return best;
+}
+
+/**
+ * Analiza la mesa rectangular más cercana a `table` que aún no esté fusionada con ella,
+ * y determina el acople hacia esa mesa colindante.
+ */
+function analyzeColindanteRect(table, maxDistMeters = 5.0) {
   if (!table) return null;
   const spec = getCatalogSpec(table.typeId);
   if (spec.shape !== "rect") return null;
@@ -807,7 +928,11 @@ function analyzeColindanteRect(table) {
     }
   }
 
-  if (!bestOther) return null;
+  // Si la mesa ya pertenece a un grupo y la otra mesa rectangular está muy lejos (ej. otra sala),
+  // ignorarla para que los botones Izq./Dcha. permitan cambiar de lado dentro del propio grupo.
+  if (!bestOther || (table.groupId && bestDist > maxDistMeters)) {
+    return null;
+  }
 
   const snapOnTable = computePairSnap(table, bestOther);
 
@@ -828,14 +953,14 @@ function analyzeColindanteRect(table) {
 function findBestRectFusionTarget() {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   if (sel && getCatalogSpec(sel.typeId).shape === "rect") {
-    const info = analyzeColindanteRect(sel);
+    const info = analyzeColindanteRect(sel, Infinity);
     if (info) return info;
   }
 
   let bestInfo = null;
   for (const t of state.tables) {
     if (getCatalogSpec(t.typeId).shape !== "rect") continue;
-    const info = analyzeColindanteRect(t);
+    const info = analyzeColindanteRect(t, Infinity);
     if (info && (!bestInfo || info.distanceMeters < bestInfo.distanceMeters)) {
       bestInfo = info;
     }
@@ -844,17 +969,102 @@ function findBestRectFusionTarget() {
 }
 
 /**
- * Fusiona dos mesas rectangulares colindantes por su lado orientado,
- * manteniendo cada mesa su propia orientación (permite formar mesas en U, en L o lineales).
+ * Cambia de lado (al lado izquierdo o derecho de su mesa ancla) una mesa que ya está fusionada.
  */
-function fuseWithColindanteRect(targetTable) {
-  const info = targetTable
-    ? analyzeColindanteRect(targetTable)
-    : findBestRectFusionTarget();
+function switchFusedTableSide(table, direction) {
+  if (!table || !table.groupId) return false;
+  const members = getGroupMembers(table);
+  if (members.length < 2) return false;
+
+  let moving = table;
+  let anchor = null;
+
+  if (table.fusedTo && table.fusedTo.anchorId) {
+    anchor = members.find((m) => m.id === table.fusedTo.anchorId);
+  }
+  if (!anchor) {
+    const child = members.find(
+      (m) => m.fusedTo && m.fusedTo.anchorId === table.id
+    );
+    if (child && members.length === 2) {
+      // Si el usuario seleccionó la mesa horizontal/ancla en un grupo de 2 y pulsa Izq./Dcha.,
+      // mover la pata acoplada al lado izquierdo o derecho de esta mesa
+      const axesT = getTableLocalAxes(table);
+      const axesC = getTableLocalAxes(child);
+      if (Math.abs(axesT.uL.x) >= Math.abs(axesC.uL.x)) {
+        anchor = table;
+        moving = child;
+      } else {
+        anchor = child;
+        moving = table;
+      }
+    } else {
+      anchor = members.find((m) => m.id !== table.id);
+    }
+  }
+
+  if (!anchor) return false;
+
+  const currentTangent =
+    moving.fusedTo && moving.fusedTo.tangentMode
+      ? moving.fusedTo.tangentMode
+      : "start";
+  const snap = computePairSnap(anchor, moving, direction, currentTangent);
+  moving.x = snap.targetX;
+  moving.y = snap.targetY;
+  moving.fusedTo = {
+    anchorId: anchor.id,
+    sideKey: snap.sideKey,
+    tangentMode: snap.tangentMode
+  };
+
+  saveToLocalStorage();
+  renderAll();
+  return true;
+}
+
+/**
+ * Fusiona dos mesas rectangulares colindantes por el lado indicado ("auto", "left" o "right"),
+ * manteniendo cada mesa su propia orientación (permite formar mesas en U, en L o lineales).
+ * Si la mesa ya está fusionada y se pulsa "left" o "right" sin otra mesa cercana, cambia la mesa a ese lado.
+ */
+function fuseWithColindanteRect(targetTable, direction = "auto") {
+  const nearbyInfo = targetTable
+    ? analyzeColindanteRect(targetTable, 4.5)
+    : null;
+
+  // Si la mesa seleccionada ya está en un grupo y no hay otra mesa suelta cerca (o ya es una pata acoplada),
+  // pulsar Izq. o Dcha. mueve esa mesa directamente al lado izquierdo o derecho de su grupo.
+  if (
+    targetTable &&
+    targetTable.groupId &&
+    (direction === "left" || direction === "right") &&
+    (!nearbyInfo ||
+      (targetTable.fusedTo &&
+        targetTable.fusedTo.anchorId &&
+        nearbyInfo.distanceMeters > 2.2))
+  ) {
+    if (switchFusedTableSide(targetTable, direction)) {
+      return;
+    }
+  }
+
+  const info =
+    nearbyInfo ||
+    (targetTable
+      ? analyzeColindanteRect(targetTable, Infinity)
+      : findBestRectFusionTarget());
 
   if (!info || !info.other) {
+    if (
+      targetTable &&
+      targetTable.groupId &&
+      (direction === "left" || direction === "right")
+    ) {
+      if (switchFusedTableSide(targetTable, direction)) return;
+    }
     alert(
-      "Coloca al menos 2 mesas rectangulares que no estén ya fusionadas entre sí para acoplarlas por su lado orientado."
+      "Coloca al menos 2 mesas rectangulares para acoplarlas hacia el lado izquierdo o derecho."
     );
     return;
   }
@@ -862,24 +1072,45 @@ function fuseWithColindanteRect(targetTable) {
   const groupA = getGroupMembers(info.table);
   const groupB = getGroupMembers(info.other);
 
-  // Si una de las mesas ya pertenece a un grupo más grande (ej. ya tiene 2 tramos de la U),
-  // ese grupo actúa como ancla fija y la mesa suelta se acopla a él.
-  let anchor = info.table;
-  let moving = info.other;
-  let movingGroup = groupB;
+  let anchor = info.other;
+  let moving = info.table;
+  let movingGroup = groupA;
 
-  if (groupB.length > groupA.length) {
-    anchor = info.other;
+  if (groupA.length > groupB.length) {
+    moving = info.other;
+    movingGroup = groupB;
+    anchor = chooseAnchorInGroup(groupA, moving);
+  } else if (groupB.length > groupA.length) {
     moving = info.table;
     movingGroup = groupA;
-  } else if (groupA.length === 1 && groupB.length === 1) {
-    // Si ambas están sueltas, la mesa vecina sirve de ancla fija para que la mesa seleccionada encaje contra ella
-    anchor = info.other;
-    moving = info.table;
-    movingGroup = groupA;
+    anchor = chooseAnchorInGroup(groupB, moving);
+  } else {
+    // Ambos grupos tienen el mismo tamaño (ej. 2 mesas sueltas):
+    // Si una es horizontal y la otra es vertical, la horizontal actúa como base (travesaño de la U)
+    // y la vertical se acopla a su izquierda o derecha.
+    const axesA = getTableLocalAxes(info.table);
+    const axesB = getTableLocalAxes(info.other);
+    const aHoriz = Math.abs(axesA.uL.x) >= Math.abs(axesA.uL.y);
+    const bHoriz = Math.abs(axesB.uL.x) >= Math.abs(axesB.uL.y);
+
+    if (aHoriz && !bHoriz) {
+      anchor = info.table;
+      moving = info.other;
+      movingGroup = groupB;
+    } else if (bHoriz && !aHoriz) {
+      anchor = info.other;
+      moving = info.table;
+      movingGroup = groupA;
+    } else {
+      anchor = info.other;
+      moving = info.table;
+      movingGroup = groupA;
+    }
   }
 
-  const snap = computePairSnap(anchor, moving);
+  const forceSide =
+    direction === "left" || direction === "right" ? direction : null;
+  const snap = computePairSnap(anchor, moving, forceSide);
   const shiftX = snap.targetX - moving.x;
   const shiftY = snap.targetY - moving.y;
 
@@ -915,8 +1146,8 @@ function fuseWithColindanteRect(targetTable) {
     });
     collinearMembers.sort((a, b) => a.x - b.x || a.y - b.y);
     for (let i = 0; i < collinearMembers.length; i++) {
-      // Alterna 4 y 3 sillas por largo para que cada 2 mesas sumen 7 sillas por largo
-      collinearMembers[i].seatsPerSide = i % 2 === 0 && i + 1 < collinearMembers.length ? 4 : 3;
+      collinearMembers[i].seatsPerSide =
+        i % 2 === 0 && i + 1 < collinearMembers.length ? 4 : 3;
       normalizeTableConfig(collinearMembers[i]);
     }
   } else {
@@ -931,7 +1162,7 @@ function fuseWithColindanteRect(targetTable) {
 
 /**
  * Re-acopla una mesa fusionada cuando el usuario cambia su ángulo de rotación,
- * manteniendo la esquina de unión con su mesa ancla.
+ * manteniendo el lado (izquierdo o derecho) y esquina de unión con su mesa ancla.
  */
 function reSnapFusedTableAfterRotation(table) {
   if (!table || !table.groupId) return;
@@ -960,19 +1191,20 @@ function reSnapFusedTableAfterRotation(table) {
       t.fusedTo.anchorId === table.id
   );
   if (child && getGroupMembers(table).length === 2) {
-    const snap = computePairSnap(child, table);
+    const preferredSide = table.x < child.x ? "left" : "right";
+    const snap = computePairSnap(child, table, preferredSide);
     table.x = snap.targetX;
     table.y = snap.targetY;
   }
 }
 
 /**
- * Cambia la esquina de alineación (izquierda/arriba <-> derecha/abajo) de una mesa fusionada.
+ * Cambia la esquina de alineación (arriba <-> abajo, o izquierda <-> derecha) de una mesa fusionada.
  */
 function cycleFusedCornerAlignment(table) {
   if (!table) return;
   if (!table.groupId) {
-    fuseWithColindanteRect(table);
+    fuseWithColindanteRect(table, "auto");
     return;
   }
 
@@ -1762,33 +1994,46 @@ function renderConflictsLayer(conflicts) {
     `;
   }
 
-  // Si la mesa seleccionada es rectangular y tiene otra mesa rectangular colindante cercana,
-  // dibujar en el propio plano un botón interactivo "🔗 Fusionar" sobre el lado orientado
+  // Si la mesa seleccionada es rectangular, mostrar controles rápidos en el plano para fusionar a Izq., Auto o Dcha.
   if (sel && getCatalogSpec(sel.typeId).shape === "rect") {
-    const colInfo = analyzeColindanteRect(sel);
-    if (colInfo && colInfo.other && colInfo.distanceMeters <= 3.0) {
+    const colInfo = analyzeColindanteRect(sel, 3.5);
+    if (colInfo && colInfo.other && colInfo.distanceMeters <= 3.5) {
       const x1 = colInfo.edgeMidWorld.x;
       const y1 = colInfo.edgeMidWorld.y;
       const x2 = colInfo.other.x;
       const y2 = colInfo.other.y;
-      const mx = (x1 + x2) / 2;
-      const my = (y1 + y2) / 2 + 12;
-      const btnText = `🔗 Fusionar con ${colInfo.other.name}`;
-      const bw = btnText.length * 6.2 + 16;
+      const mx = Math.max(115, Math.min(PLAN_WIDTH_PX - 115, (x1 + x2) / 2));
+      const my = Math.max(25, Math.min(PLAN_HEIGHT_PX - 40, (y1 + y2) / 2 + 12));
 
       html += `
-        <g class="svg-fuse-btn" data-fuse-table="${sel.id}" style="cursor: pointer;">
+        <g pointer-events="none">
           <line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(
         1
       )}" y2="${y2.toFixed(
         1
       )}" stroke="#2563eb" stroke-width="2" stroke-dasharray="3 3" />
-          <circle cx="${x1.toFixed(1)}" cy="${y1.toFixed(1)}" r="4" fill="#2563eb" stroke="#fff" stroke-width="1.2" />
-          <g transform="translate(${mx.toFixed(1)}, ${my.toFixed(1)})">
-            <rect x="${(-bw / 2).toFixed(1)}" y="-11" width="${bw.toFixed(
+          <circle cx="${x1.toFixed(1)}" cy="${y1.toFixed(
         1
-      )}" height="22" rx="11" fill="#2563eb" stroke="#ffffff" stroke-width="1.5" />
-            <text x="0" y="4" text-anchor="middle" font-size="10" font-weight="700" fill="#ffffff">${btnText}</text>
+      )}" r="4" fill="#2563eb" stroke="#fff" stroke-width="1.2" />
+        </g>
+        <g transform="translate(${mx.toFixed(1)}, ${my.toFixed(1)})">
+          <g class="svg-fuse-btn" data-fuse-table="${
+            sel.id
+          }" data-fuse-dir="left" style="cursor: pointer;" transform="translate(-74, 0)">
+            <rect x="-28" y="-11" width="56" height="22" rx="11" fill="#1d4ed8" stroke="#ffffff" stroke-width="1.4" />
+            <text x="0" y="3.5" text-anchor="middle" font-size="9.5" font-weight="700" fill="#ffffff">⬅️ Izq.</text>
+          </g>
+          <g class="svg-fuse-btn" data-fuse-table="${
+            sel.id
+          }" data-fuse-dir="auto" style="cursor: pointer;">
+            <rect x="-42" y="-11" width="84" height="22" rx="11" fill="#2563eb" stroke="#ffffff" stroke-width="1.5" />
+            <text x="0" y="3.5" text-anchor="middle" font-size="9.5" font-weight="700" fill="#ffffff">🔗 Fusionar</text>
+          </g>
+          <g class="svg-fuse-btn" data-fuse-table="${
+            sel.id
+          }" data-fuse-dir="right" style="cursor: pointer;" transform="translate(74, 0)">
+            <rect x="-28" y="-11" width="56" height="22" rx="11" fill="#1d4ed8" stroke="#ffffff" stroke-width="1.4" />
+            <text x="0" y="3.5" text-anchor="middle" font-size="9.5" font-weight="700" fill="#ffffff">Dcha. ➡️</text>
           </g>
         </g>
       `;
@@ -1796,17 +2041,31 @@ function renderConflictsLayer(conflicts) {
 
     if (sel.groupId) {
       const dimSel = getEffectiveDimensions(sel);
-      const sepY = sel.y + (Math.max(dimSel.effLength, dimSel.effWidth) * ppm) / 2 + 18;
-      const sepText = `🔓 Separar ${sel.name}`;
-      const sw = sepText.length * 6.0 + 16;
+      const sepX = Math.max(120, Math.min(PLAN_WIDTH_PX - 120, sel.x));
+      const sepY = Math.min(
+        PLAN_HEIGHT_PX - 16,
+        sel.y + (Math.max(dimSel.effLength, dimSel.effWidth) * ppm) / 2 + 18
+      );
       html += `
-        <g class="svg-separate-btn" data-separate-table="${sel.id}" style="cursor: pointer;" transform="translate(${sel.x.toFixed(
-        1
-      )}, ${Math.min(PLAN_HEIGHT_PX - 16, sepY).toFixed(1)})">
-          <rect x="${(-sw / 2).toFixed(1)}" y="-10" width="${sw.toFixed(
-        1
-      )}" height="20" rx="10" fill="#475569" stroke="#ffffff" stroke-width="1.4" />
-          <text x="0" y="3.5" text-anchor="middle" font-size="9.5" font-weight="700" fill="#ffffff">${sepText}</text>
+        <g transform="translate(${sepX.toFixed(1)}, ${sepY.toFixed(1)})">
+          <g class="svg-fuse-btn" data-fuse-table="${
+            sel.id
+          }" data-fuse-dir="left" style="cursor: pointer;" transform="translate(-80, 0)">
+            <rect x="-28" y="-10" width="56" height="20" rx="10" fill="#1d4ed8" stroke="#ffffff" stroke-width="1.3" />
+            <text x="0" y="3.5" text-anchor="middle" font-size="9" font-weight="700" fill="#ffffff">⬅️ Izq.</text>
+          </g>
+          <g class="svg-separate-btn" data-separate-table="${
+            sel.id
+          }" style="cursor: pointer;">
+            <rect x="-48" y="-10" width="96" height="20" rx="10" fill="#475569" stroke="#ffffff" stroke-width="1.4" />
+            <text x="0" y="3.5" text-anchor="middle" font-size="9.2" font-weight="700" fill="#ffffff">🔓 Separar</text>
+          </g>
+          <g class="svg-fuse-btn" data-fuse-table="${
+            sel.id
+          }" data-fuse-dir="right" style="cursor: pointer;" transform="translate(80, 0)">
+            <rect x="-28" y="-10" width="56" height="20" rx="10" fill="#1d4ed8" stroke="#ffffff" stroke-width="1.3" />
+            <text x="0" y="3.5" text-anchor="middle" font-size="9" font-weight="700" fill="#ffffff">Dcha. ➡️</text>
+          </g>
         </g>
       `;
     }
@@ -1914,6 +2173,8 @@ function updateStatsAndInspector() {
       rectSeatsControls.style.display = "none";
       rotationControls.style.display = "none";
       btnQuickFuseNeighbor.style.display = "none";
+      btnQuickFuseLeft.style.display = "none";
+      btnQuickFuseRight.style.display = "none";
 
       lblTableBaseDim.textContent = `Ø ${fmtMeters(dim.baseDiameter)}`;
       lblTableEffDim.textContent = `Ø ${fmtMeters(dim.effDiameter)}${
@@ -1943,19 +2204,29 @@ function updateStatsAndInspector() {
       btnUnjoinRect.disabled = !isGrouped && dim.joinedCount <= 1;
       btnJoinRect.disabled = !isGrouped;
 
-      const colInfo = analyzeColindanteRect(sel);
+      const colInfo = analyzeColindanteRect(sel, 5.0);
+      const canFuseLeftRight = Boolean((colInfo && colInfo.other) || isGrouped);
+      btnFuseLeft.disabled = !canFuseLeftRight;
+      btnFuseRight.disabled = !canFuseLeftRight;
+      btnQuickFuseLeft.style.display = canFuseLeftRight
+        ? "inline-flex"
+        : "none";
+      btnQuickFuseRight.style.display = canFuseLeftRight
+        ? "inline-flex"
+        : "none";
+
       if (colInfo && colInfo.other) {
         btnMergeNearbyRect.disabled = false;
-        btnMergeNearbyRect.textContent = `🔗 Fusionar con ${colInfo.other.name}`;
-        lblMergeSideInfo.innerHTML = `Se acoplará por el <strong>${colInfo.sideLabel}</strong> hacia <strong>${colInfo.other.name}</strong> manteniendo la orientación de cada mesa.`;
+        btnMergeNearbyRect.textContent = `🔗 Fusionar con ${colInfo.other.name} (Auto)`;
+        lblMergeSideInfo.innerHTML = `Puedes fusionar hacia el <strong>lado izquierdo</strong> o el <strong>lado derecho</strong> (o automático por el <strong>${colInfo.sideLabel}</strong> con <strong>${colInfo.other.name}</strong>).`;
         btnQuickFuseNeighbor.style.display = "inline-flex";
         btnQuickFuseNeighbor.textContent = `🔗 Fusionar (${colInfo.other.name})`;
       } else {
         btnMergeNearbyRect.disabled = true;
-        btnMergeNearbyRect.textContent = `🔗 Fusionar con mesa colindante`;
+        btnMergeNearbyRect.textContent = `🔗 Fusionar por lado orientado (Auto)`;
         lblMergeSideInfo.textContent = isGrouped
-          ? "Mesa ya unida al grupo. Añade otra mesa rectangular si deseas seguir ampliando la forma en U."
-          : "Añade otra mesa rectangular al plano para fusionarlas manteniendo su orientación.";
+          ? "Usa «⬅️ Fusionar Izq.» o «Fusionar Dcha. ➡️» para cambiar esta mesa de lado, o añade otra mesa rectangular para completar la forma en U."
+          : "Añade otra mesa rectangular al plano para poder fusionarla hacia la izquierda o hacia la derecha.";
         btnQuickFuseNeighbor.style.display = "none";
       }
 
@@ -2087,14 +2358,15 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
     return;
   }
 
-  // Comprobar si se pulsó el botón flotante de fusión en el propio SVG
+  // Comprobar si se pulsó alguno de los botones flotantes de fusión (Izq., Auto o Dcha.) en el propio SVG
   const fuseBtn = e.target.closest("[data-fuse-table]");
   if (fuseBtn) {
     e.stopPropagation();
     const id = fuseBtn.dataset.fuseTable;
+    const dir = fuseBtn.dataset.fuseDir || "auto";
     const table = state.tables.find((t) => t.id === id);
     if (table) {
-      fuseWithColindanteRect(table);
+      fuseWithColindanteRect(table, dir);
     }
     return;
   }
@@ -2481,19 +2753,40 @@ selRectSides.addEventListener("change", () => {
 // Botones de fusión y unión de mesas rectangulares
 btnMergeNearbyRect.addEventListener("click", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
-  fuseWithColindanteRect(sel);
+  fuseWithColindanteRect(sel, "auto");
+});
+
+btnFuseLeft.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  fuseWithColindanteRect(sel, "left");
+});
+
+btnFuseRight.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  fuseWithColindanteRect(sel, "right");
 });
 
 btnTopFuseRect.addEventListener("click", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
   fuseWithColindanteRect(
-    sel && getCatalogSpec(sel.typeId).shape === "rect" ? sel : null
+    sel && getCatalogSpec(sel.typeId).shape === "rect" ? sel : null,
+    "auto"
   );
 });
 
 btnQuickFuseNeighbor.addEventListener("click", () => {
   const sel = state.tables.find((t) => t.id === state.selectedId);
-  fuseWithColindanteRect(sel);
+  fuseWithColindanteRect(sel, "auto");
+});
+
+btnQuickFuseLeft.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  fuseWithColindanteRect(sel, "left");
+});
+
+btnQuickFuseRight.addEventListener("click", () => {
+  const sel = state.tables.find((t) => t.id === state.selectedId);
+  fuseWithColindanteRect(sel, "right");
 });
 
 btnJoinRect.addEventListener("click", () => {
