@@ -1799,7 +1799,34 @@ function deleteSelectedTable() {
    CAPAS SVG: CUADRÍCULA, COTAS DEL PLANO, MESAS Y DISTANCIAS
    ========================================================================== */
 
+let cachedGridStateKey = "";
+let cachedDimStateKey = "";
+let tablesUnderContainer = null;
+let tablesTopContainer = null;
+const tableDomCache = new Map();
+
+function ensureTableLayerContainers() {
+  if (!tablesUnderContainer || !tablesUnderContainer.parentNode) {
+    tablesLayer.innerHTML = "";
+    tablesUnderContainer = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "g"
+    );
+    tablesTopContainer = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "g"
+    );
+    tablesLayer.appendChild(tablesUnderContainer);
+    tablesLayer.appendChild(tablesTopContainer);
+    tableDomCache.clear();
+  }
+}
+
 function renderGridLayer() {
+  const key = `${state.showGrid}_${state.pxPerMeter.toFixed(4)}`;
+  if (key === cachedGridStateKey) return;
+  cachedGridStateKey = key;
+
   gridLayer.innerHTML = "";
   if (!state.showGrid) return;
 
@@ -1846,6 +1873,10 @@ function drawDimensionLineSvg(x1, y1, x2, y2, label, color = "#1e293b") {
 }
 
 function renderDimensionsLayer() {
+  const key = `${state.showDimensions}_${state.pxPerMeter.toFixed(4)}`;
+  if (key === cachedDimStateKey) return;
+  cachedDimStateKey = key;
+
   dimensionsLayer.innerHTML = "";
   if (!state.showDimensions) return;
 
@@ -1920,7 +1951,7 @@ function getFreeLongSideInterval(table, baseL, sideYLocal) {
   }
 
   const axes = getTableLocalAxes(table);
-  const steps = 24;
+  const steps = 16;
   const freeXs = [];
   for (let i = 0; i <= steps; i++) {
     const lx = -baseL / 2 + (i / steps) * baseL;
@@ -1938,7 +1969,7 @@ function getFreeLongSideInterval(table, baseL, sideYLocal) {
     }
   }
 
-  if (freeXs.length < 3) {
+  if (freeXs.length < 2) {
     return { minX: 0, maxX: 0, blockedAll: true };
   }
   return {
@@ -2013,195 +2044,278 @@ function buildChairsSvg(table, dim, ppm, strokeColor) {
 }
 
 function renderTablesLayer() {
-  tablesLayer.innerHTML = "";
+  ensureTableLayerContainers();
   const ppm = state.pxPerMeter;
   const selTable = state.tables.find((t) => t.id === state.selectedId);
   const selectedGroupId = selTable && selTable.groupId ? selTable.groupId : null;
 
-  // Pasada 1: Halos, zonas de sillas y sillas (debajo de los tableros de madera para que las uniones en U o L se vean limpias)
+  const activeIds = new Set();
+
   for (const table of state.tables) {
-    const dim = getEffectiveDimensions(table);
-    const isConflict = table.isConflict;
-    const strokeColor = isConflict ? "var(--red-stroke)" : "var(--green-stroke)";
-    const chairZoneFill = isConflict ? "var(--red-chair)" : "var(--green-chair)";
-    const halfClearancePx = (state.minClearance / 2) * ppm;
-
-    const gUnder = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    gUnder.setAttribute("class", `table-group ${isConflict ? "conflict" : ""}`);
-    gUnder.setAttribute(
-      "transform",
-      `translate(${table.x.toFixed(1)}, ${table.y.toFixed(1)}) rotate(${(
-        table.rotation || 0
-      ).toFixed(1)})`
-    );
-    gUnder.dataset.id = table.id;
-
-    let underSvg = "";
-    if (dim.shape === "circle") {
-      const effR = dim.effRadius * ppm;
-      if (state.showClearanceHalo) {
-        underSvg += `<circle r="${(effR + halfClearancePx).toFixed(
-          1
-        )}" fill="none" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="2 3" opacity="0.55" />`;
-      }
-      if (table.hasChairs) {
-        underSvg += `<circle r="${effR.toFixed(
-          1
-        )}" fill="${chairZoneFill}" stroke="${strokeColor}" stroke-width="1.3" stroke-dasharray="4 2" />`;
-      }
-      underSvg += buildChairsSvg(table, dim, ppm, strokeColor);
-    } else {
-      const effL = dim.effLength * ppm;
-      const effW = dim.effWidth * ppm;
-      if (state.showClearanceHalo) {
-        const haloL = effL + halfClearancePx * 2;
-        const haloW = effW + halfClearancePx * 2;
-        underSvg += `<rect x="${(-haloL / 2).toFixed(1)}" y="${(
-          -haloW / 2
-        ).toFixed(1)}" width="${haloL.toFixed(1)}" height="${haloW.toFixed(
-          1
-        )}" rx="6" fill="none" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="2 3" opacity="0.55" />`;
-      }
-      if (table.hasChairs) {
-        underSvg += `<rect x="${(-effL / 2).toFixed(1)}" y="${(
-          -effW / 2
-        ).toFixed(1)}" width="${effL.toFixed(1)}" height="${effW.toFixed(
-          1
-        )}" rx="5" fill="${chairZoneFill}" stroke="${strokeColor}" stroke-width="1.3" stroke-dasharray="4 2" />`;
-      }
-      underSvg += buildChairsSvg(table, dim, ppm, strokeColor);
-    }
-
-    gUnder.innerHTML = underSvg;
-    tablesLayer.appendChild(gUnder);
-  }
-
-  // Pasada 2: Tableros de las mesas, etiquetas, bordes de grupo y controles de selección
-  for (const table of state.tables) {
+    activeIds.add(table.id);
     const dim = getEffectiveDimensions(table);
     const isSelected = table.id === state.selectedId;
-    const isSameGroupAsSelected =
-      !isSelected && selectedGroupId && table.groupId === selectedGroupId;
-    const isConflict = table.isConflict;
-
-    const fillColor = isConflict ? "var(--red-fill)" : "var(--green-fill)";
-    const strokeColor = isConflict ? "var(--red-stroke)" : "var(--green-stroke)";
-
-    const gTop = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    gTop.setAttribute(
-      "class",
-      `table-group ${isSelected ? "selected" : ""} ${isConflict ? "conflict" : ""}`
+    const isSameGroupAsSelected = Boolean(
+      !isSelected && selectedGroupId && table.groupId === selectedGroupId
     );
-    gTop.setAttribute(
-      "transform",
-      `translate(${table.x.toFixed(1)}, ${table.y.toFixed(1)}) rotate(${(
-        table.rotation || 0
-      ).toFixed(1)})`
-    );
-    gTop.dataset.id = table.id;
+    const isConflict = Boolean(table.isConflict);
 
-    let innerSvg = "";
+    let entry = tableDomCache.get(table.id);
+    if (!entry) {
+      const underEl = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "g"
+      );
+      underEl.dataset.id = table.id;
+      const topEl = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "g"
+      );
+      topEl.dataset.id = table.id;
 
-    if (dim.shape === "circle") {
-      const baseR = dim.baseRadius * ppm;
-      const effR = dim.effRadius * ppm;
+      tablesUnderContainer.appendChild(underEl);
+      tablesTopContainer.appendChild(topEl);
 
-      innerSvg += `<circle r="${baseR.toFixed(
-        1
-      )}" fill="${fillColor}" stroke="${strokeColor}" stroke-width="2" />`;
+      entry = {
+        underEl,
+        topEl,
+        labelGroupEl: null,
+        underSig: "",
+        topSig: "",
+        lastTransform: "",
+        lastCounterRot: "",
+        lastUnderClass: "",
+        lastTopClass: ""
+      };
+      tableDomCache.set(table.id, entry);
+    }
 
-      if (isSelected) {
-        innerSvg += `<circle class="selection-outline" r="${(effR + 4).toFixed(
-          1
-        )}" fill="none" />`;
+    const underClass = `table-group ${isConflict ? "conflict" : ""}`;
+    if (entry.lastUnderClass !== underClass) {
+      entry.underEl.setAttribute("class", underClass);
+      entry.lastUnderClass = underClass;
+    }
+
+    const topClass = `table-group ${isSelected ? "selected" : ""} ${
+      isConflict ? "conflict" : ""
+    }`;
+    if (entry.lastTopClass !== topClass) {
+      entry.topEl.setAttribute("class", topClass);
+      entry.lastTopClass = topClass;
+    }
+
+    const transformStr = `translate(${table.x.toFixed(1)}, ${table.y.toFixed(
+      1
+    )}) rotate(${(table.rotation || 0).toFixed(1)})`;
+    if (entry.lastTransform !== transformStr) {
+      entry.underEl.setAttribute("transform", transformStr);
+      entry.topEl.setAttribute("transform", transformStr);
+      entry.lastTransform = transformStr;
+    }
+
+    // Firma del contenido inferior (halos + sillas)
+    const groupPeersSig = table.groupId
+      ? getGroupMembers(table)
+          .map(
+            (p) =>
+              `${p.id}:${Math.round(p.x - table.x)},${Math.round(
+                p.y - table.y
+              )},${Math.round(p.rotation || 0)}`
+          )
+          .join("|")
+      : "";
+
+    const underSig = `${table.typeId}|${table.hasChairs}|${table.seats}|${
+      table.seatsPerSide
+    }|${table.rectSides}|${table.joinedCount}|${isConflict}|${
+      state.showClearanceHalo
+    }|${state.minClearance}|${ppm.toFixed(2)}|${state.chairMode}|${groupPeersSig}`;
+
+    if (entry.underSig !== underSig) {
+      entry.underSig = underSig;
+      const strokeColor = isConflict
+        ? "var(--red-stroke)"
+        : "var(--green-stroke)";
+      const chairZoneFill = isConflict
+        ? "var(--red-chair)"
+        : "var(--green-chair)";
+      const halfClearancePx = (state.minClearance / 2) * ppm;
+
+      let underSvg = "";
+      if (dim.shape === "circle") {
+        const effR = dim.effRadius * ppm;
+        if (state.showClearanceHalo) {
+          underSvg += `<circle r="${(effR + halfClearancePx).toFixed(
+            1
+          )}" fill="none" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="2 3" opacity="0.55" />`;
+        }
+        if (table.hasChairs) {
+          underSvg += `<circle r="${effR.toFixed(
+            1
+          )}" fill="${chairZoneFill}" stroke="${strokeColor}" stroke-width="1.3" stroke-dasharray="4 2" />`;
+        }
+        underSvg += buildChairsSvg(table, dim, ppm, strokeColor);
+      } else {
+        const effL = dim.effLength * ppm;
+        const effW = dim.effWidth * ppm;
+        if (state.showClearanceHalo) {
+          const haloL = effL + halfClearancePx * 2;
+          const haloW = effW + halfClearancePx * 2;
+          underSvg += `<rect x="${(-haloL / 2).toFixed(1)}" y="${(
+            -haloW / 2
+          ).toFixed(1)}" width="${haloL.toFixed(1)}" height="${haloW.toFixed(
+            1
+          )}" rx="6" fill="none" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="2 3" opacity="0.55" />`;
+        }
+        if (table.hasChairs) {
+          underSvg += `<rect x="${(-effL / 2).toFixed(1)}" y="${(
+            -effW / 2
+          ).toFixed(1)}" width="${effL.toFixed(1)}" height="${effW.toFixed(
+            1
+          )}" rx="5" fill="${chairZoneFill}" stroke="${strokeColor}" stroke-width="1.3" stroke-dasharray="4 2" />`;
+        }
+        underSvg += buildChairsSvg(table, dim, ppm, strokeColor);
       }
-    } else {
-      const baseL = dim.baseLength * ppm;
-      const baseW = dim.baseWidth * ppm;
-      const effL = dim.effLength * ppm;
-      const effW = dim.effWidth * ppm;
+      entry.underEl.innerHTML = underSvg;
+    }
 
-      innerSvg += `<rect x="${(-baseL / 2).toFixed(1)}" y="${(
-        -baseW / 2
-      ).toFixed(1)}" width="${baseL.toFixed(1)}" height="${baseW.toFixed(
-        1
-      )}" rx="3" fill="${fillColor}" stroke="${strokeColor}" stroke-width="2" />`;
+    // Firma del contenido superior (tablero, texto, controles de selección)
+    const topSig = `${table.typeId}|${table.name}|${table.hasChairs}|${
+      table.seats
+    }|${table.joinedCount}|${isConflict}|${isSelected}|${isSameGroupAsSelected}|${Boolean(
+      table.groupId
+    )}|${ppm.toFixed(2)}|${state.chairMode}`;
 
-      if (dim.joinedCount > 1) {
-        const unitLPx = baseL / dim.joinedCount;
-        for (let k = 1; k < dim.joinedCount; k++) {
-          const seamX = -baseL / 2 + k * unitLPx;
-          innerSvg += `<line x1="${seamX.toFixed(1)}" y1="${(
-            -baseW / 2
-          ).toFixed(1)}" x2="${seamX.toFixed(1)}" y2="${(
-            baseW / 2
-          ).toFixed(1)}" stroke="#ffffff" stroke-width="1.6" stroke-dasharray="3 2" opacity="0.85" />`;
+    const counterRotStr = `rotate(${(-(table.rotation || 0)).toFixed(1)})`;
+
+    if (entry.topSig !== topSig) {
+      entry.topSig = topSig;
+      const fillColor = isConflict ? "var(--red-fill)" : "var(--green-fill)";
+      const strokeColor = isConflict
+        ? "var(--red-stroke)"
+        : "var(--green-stroke)";
+
+      let innerSvg = "";
+      if (dim.shape === "circle") {
+        const baseR = dim.baseRadius * ppm;
+        const effR = dim.effRadius * ppm;
+
+        innerSvg += `<circle r="${baseR.toFixed(
+          1
+        )}" fill="${fillColor}" stroke="${strokeColor}" stroke-width="2" />`;
+
+        if (isSelected) {
+          innerSvg += `<circle class="selection-outline" r="${(effR + 4).toFixed(
+            1
+          )}" fill="none" />`;
+        }
+      } else {
+        const baseL = dim.baseLength * ppm;
+        const baseW = dim.baseWidth * ppm;
+        const effL = dim.effLength * ppm;
+        const effW = dim.effWidth * ppm;
+
+        innerSvg += `<rect x="${(-baseL / 2).toFixed(1)}" y="${(
+          -baseW / 2
+        ).toFixed(1)}" width="${baseL.toFixed(1)}" height="${baseW.toFixed(
+          1
+        )}" rx="3" fill="${fillColor}" stroke="${strokeColor}" stroke-width="2" />`;
+
+        if (dim.joinedCount > 1) {
+          const unitLPx = baseL / dim.joinedCount;
+          for (let k = 1; k < dim.joinedCount; k++) {
+            const seamX = -baseL / 2 + k * unitLPx;
+            innerSvg += `<line x1="${seamX.toFixed(1)}" y1="${(
+              -baseW / 2
+            ).toFixed(1)}" x2="${seamX.toFixed(1)}" y2="${(
+              baseW / 2
+            ).toFixed(
+              1
+            )}" stroke="#ffffff" stroke-width="1.6" stroke-dasharray="3 2" opacity="0.85" />`;
+          }
+        }
+
+        if (isSameGroupAsSelected) {
+          innerSvg += `<rect x="${(-baseL / 2 - 2).toFixed(1)}" y="${(
+            -baseW / 2 - 2
+          ).toFixed(1)}" width="${(baseL + 4).toFixed(1)}" height="${(
+            baseW + 4
+          ).toFixed(
+            1
+          )}" rx="4" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-dasharray="4 2" opacity="0.85" />`;
+        }
+
+        if (isSelected) {
+          const selL = effL + 8;
+          const selW = effW + 8;
+          innerSvg += `<rect class="selection-outline" x="${(
+            -selL / 2
+          ).toFixed(1)}" y="${(-selW / 2).toFixed(1)}" width="${selL.toFixed(
+            1
+          )}" height="${selW.toFixed(1)}" rx="6" fill="none" />`;
+
+          const handleY = -effW / 2 - 20;
+          innerSvg += `
+            <g class="rotate-handle" data-rotate-id="${table.id}">
+              <line x1="0" y1="${(-effW / 2).toFixed(
+            1
+          )}" x2="0" y2="${handleY.toFixed(
+            1
+          )}" stroke="#2563eb" stroke-width="2" />
+              <circle cx="0" cy="${handleY.toFixed(
+                1
+              )}" r="14" fill="rgba(37, 99, 235, 0.15)" />
+              <circle cx="0" cy="${handleY.toFixed(
+                1
+              )}" r="6.5" fill="#2563eb" stroke="#ffffff" stroke-width="1.5" />
+            </g>
+          `;
         }
       }
 
-      if (isSameGroupAsSelected) {
-        innerSvg += `<rect x="${(-baseL / 2 - 2).toFixed(1)}" y="${(
-          -baseW / 2 - 2
-        ).toFixed(1)}" width="${(baseL + 4).toFixed(1)}" height="${(
-          baseW + 4
-        ).toFixed(
-          1
-        )}" rx="4" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-dasharray="4 2" opacity="0.85" />`;
-      }
+      const groupBadge = table.groupId ? " 🔗" : "";
+      const joinedBadge =
+        dim.shape === "rect" && dim.joinedCount > 1
+          ? ` (×${dim.joinedCount})`
+          : "";
+      const seatsBadge = table.hasChairs ? ` · ${table.seats}🪑` : "";
+      const dimText =
+        dim.shape === "circle"
+          ? `Ø${dim.effDiameter.toFixed(1).replace(".", ",")}m${seatsBadge}`
+          : `${dim.effLength.toFixed(1).replace(".", ",")}×${dim.effWidth
+              .toFixed(2)
+              .replace(/0$/, "")
+              .replace(".", ",")}m${seatsBadge}`;
 
-      if (isSelected) {
-        const selL = effL + 8;
-        const selW = effW + 8;
-        innerSvg += `<rect class="selection-outline" x="${(-selL / 2).toFixed(
-          1
-        )}" y="${(-selW / 2).toFixed(1)}" width="${selL.toFixed(
-          1
-        )}" height="${selW.toFixed(1)}" rx="6" fill="none" />`;
+      innerSvg += `
+        <g data-label-rot="1" transform="${counterRotStr}" pointer-events="none">
+          <text x="0" y="-2" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2.5px;">${table.name}${joinedBadge}${groupBadge}</text>
+          <text x="0" y="9" text-anchor="middle" font-size="8" font-weight="700" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2px;">${dimText}</text>
+        </g>
+      `;
 
-        const handleY = -effW / 2 - 20;
-        innerSvg += `
-          <g class="rotate-handle" data-rotate-id="${table.id}">
-            <line x1="0" y1="${(-effW / 2).toFixed(1)}" x2="0" y2="${handleY.toFixed(
-          1
-        )}" stroke="#2563eb" stroke-width="2" />
-            <circle cx="0" cy="${handleY.toFixed(
-              1
-            )}" r="14" fill="rgba(37, 99, 235, 0.15)" />
-            <circle cx="0" cy="${handleY.toFixed(
-              1
-            )}" r="6.5" fill="#2563eb" stroke="#ffffff" stroke-width="1.5" />
-          </g>
-        `;
-      }
+      entry.topEl.innerHTML = innerSvg;
+      entry.labelGroupEl = entry.topEl.querySelector("[data-label-rot]");
+      entry.lastCounterRot = counterRotStr;
+    } else if (entry.labelGroupEl && entry.lastCounterRot !== counterRotStr) {
+      entry.labelGroupEl.setAttribute("transform", counterRotStr);
+      entry.lastCounterRot = counterRotStr;
     }
+  }
 
-    const groupBadge = table.groupId ? " 🔗" : "";
-    const joinedBadge =
-      dim.shape === "rect" && dim.joinedCount > 1 ? ` (×${dim.joinedCount})` : "";
-    const seatsBadge = table.hasChairs ? ` · ${table.seats}🪑` : "";
-    const dimText =
-      dim.shape === "circle"
-        ? `Ø${dim.effDiameter.toFixed(1).replace(".", ",")}m${seatsBadge}`
-        : `${dim.effLength.toFixed(1).replace(".", ",")}×${dim.effWidth
-            .toFixed(2)
-            .replace(/0$/, "")
-            .replace(".", ",")}m${seatsBadge}`;
-
-    const counterRot = -(table.rotation || 0);
-    innerSvg += `
-      <g transform="rotate(${counterRot})" pointer-events="none">
-        <text x="0" y="-2" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2.5px;">${table.name}${joinedBadge}${groupBadge}</text>
-        <text x="0" y="9" text-anchor="middle" font-size="8" font-weight="700" fill="#ffffff" style="paint-order: stroke; stroke: rgba(0,0,0,0.45); stroke-width: 2px;">${dimText}</text>
-      </g>
-    `;
-
-    gTop.innerHTML = innerSvg;
-    tablesLayer.appendChild(gTop);
+  // Limpiar nodos de mesas eliminadas
+  for (const [id, entry] of tableDomCache.entries()) {
+    if (!activeIds.has(id)) {
+      if (entry.underEl.parentNode) entry.underEl.remove();
+      if (entry.topEl.parentNode) entry.topEl.remove();
+      tableDomCache.delete(id);
+    }
   }
 }
 
-function renderConflictsLayer(conflicts) {
-  conflictsLayer.innerHTML = "";
+let lastConflictsHtml = null;
+
+function renderConflictsLayer(conflicts, isInteractiveDrag = false) {
   const ppm = state.pxPerMeter;
   let html = "";
 
@@ -2329,8 +2443,9 @@ function renderConflictsLayer(conflicts) {
     `;
   }
 
-  // Si la mesa seleccionada es rectangular, mostrar línea guía del borde más cercano y controles rápidos
+  // Si la mesa seleccionada es rectangular y no se está arrastrando activamente, mostrar controles rápidos en SVG
   if (
+    !isInteractiveDrag &&
     sel &&
     getCatalogSpec(sel.typeId).shape === "rect" &&
     !(state.activeSnapPreview && state.activeSnapPreview.canSnap)
@@ -2428,11 +2543,15 @@ function renderConflictsLayer(conflicts) {
     }
   }
 
-  conflictsLayer.innerHTML = html;
+  if (html !== lastConflictsHtml) {
+    conflictsLayer.innerHTML = html;
+    lastConflictsHtml = html;
+  }
 }
 
+let lastToolOverlayHtml = null;
+
 function renderToolOverlay() {
-  toolOverlayLayer.innerHTML = "";
   let html = "";
 
   if (state.rulerLine) {
@@ -2452,14 +2571,17 @@ function renderToolOverlay() {
     html += `<circle cx="${pt.x}" cy="${pt.y}" r="5" fill="#7c3aed" stroke="#ffffff" stroke-width="2" />`;
   }
 
-  toolOverlayLayer.innerHTML = html;
+  if (html !== lastToolOverlayHtml) {
+    toolOverlayLayer.innerHTML = html;
+    lastToolOverlayHtml = html;
+  }
 }
 
 /* ==========================================================================
    PANEL INSPECTOR Y ESTADÍSTICAS SUPERIORES
    ========================================================================== */
 
-function updateStatsAndInspector() {
+function updateStatsAndInspector(isInteractiveDrag = false) {
   const totalPhysicalTables = state.tables.reduce(
     (acc, t) => acc + Math.max(1, t.joinedCount || 1),
     0
@@ -2561,30 +2683,32 @@ function updateStatsAndInspector() {
       btnUnjoinRect.disabled = !isGrouped && dim.joinedCount <= 1;
       btnJoinRect.disabled = !isGrouped;
 
-      const colInfo = analyzeColindanteRect(sel, 5.0);
-      const canFuseLeftRight = Boolean((colInfo && colInfo.other) || isGrouped);
-      btnFuseLeft.disabled = !canFuseLeftRight;
-      btnFuseRight.disabled = !canFuseLeftRight;
-      btnQuickFuseLeft.style.display = canFuseLeftRight
-        ? "inline-flex"
-        : "none";
-      btnQuickFuseRight.style.display = canFuseLeftRight
-        ? "inline-flex"
-        : "none";
+      if (!isInteractiveDrag) {
+        const colInfo = analyzeColindanteRect(sel, 5.0);
+        const canFuseLeftRight = Boolean((colInfo && colInfo.other) || isGrouped);
+        btnFuseLeft.disabled = !canFuseLeftRight;
+        btnFuseRight.disabled = !canFuseLeftRight;
+        btnQuickFuseLeft.style.display = canFuseLeftRight
+          ? "inline-flex"
+          : "none";
+        btnQuickFuseRight.style.display = canFuseLeftRight
+          ? "inline-flex"
+          : "none";
 
-      if (colInfo && colInfo.other) {
-        btnMergeNearbyRect.disabled = false;
-        btnMergeNearbyRect.textContent = `🔗 Fusionar con ${colInfo.other.name} (Auto)`;
-        lblMergeSideInfo.innerHTML = `Puedes fusionar hacia el <strong>lado izquierdo</strong> o el <strong>lado derecho</strong> (o automático por el <strong>${colInfo.sideLabel}</strong> con <strong>${colInfo.other.name}</strong>).`;
-        btnQuickFuseNeighbor.style.display = "inline-flex";
-        btnQuickFuseNeighbor.textContent = `🔗 Fusionar (${colInfo.other.name})`;
-      } else {
-        btnMergeNearbyRect.disabled = true;
-        btnMergeNearbyRect.textContent = `🔗 Fusionar por lado orientado (Auto)`;
-        lblMergeSideInfo.textContent = isGrouped
-          ? "Usa «⬅️ Fusionar Izq.» o «Fusionar Dcha. ➡️» para cambiar esta mesa de lado, o añade otra mesa rectangular para completar la forma en U."
-          : "Añade otra mesa rectangular al plano para poder fusionarla hacia la izquierda o hacia la derecha.";
-        btnQuickFuseNeighbor.style.display = "none";
+        if (colInfo && colInfo.other) {
+          btnMergeNearbyRect.disabled = false;
+          btnMergeNearbyRect.textContent = `🔗 Fusionar con ${colInfo.other.name} (Auto)`;
+          lblMergeSideInfo.innerHTML = `Puedes fusionar hacia el <strong>lado izquierdo</strong> o el <strong>lado derecho</strong> (o automático por el <strong>${colInfo.sideLabel}</strong> con <strong>${colInfo.other.name}</strong>).`;
+          btnQuickFuseNeighbor.style.display = "inline-flex";
+          btnQuickFuseNeighbor.textContent = `🔗 Fusionar (${colInfo.other.name})`;
+        } else {
+          btnMergeNearbyRect.disabled = true;
+          btnMergeNearbyRect.textContent = `🔗 Fusionar por lado orientado (Auto)`;
+          lblMergeSideInfo.textContent = isGrouped
+            ? "Usa «⬅️ Fusionar Izq.» o «Fusionar Dcha. ➡️» para cambiar esta mesa de lado, o añade otra mesa rectangular para completar la forma en U."
+            : "Añade otra mesa rectangular al plano para poder fusionarla hacia la izquierda o hacia la derecha.";
+          btnQuickFuseNeighbor.style.display = "none";
+        }
       }
 
       lblTableBaseDim.textContent = `${fmtMeters(dim.baseLength)} × ${fmtMeters(
@@ -2626,6 +2750,9 @@ function updateStatsAndInspector() {
     }
   }
 
+  // Evitar reconstruir la lista completa del panel derecho en cada frame de arrastre
+  if (isInteractiveDrag) return;
+
   lblListCount.textContent = String(state.tables.length);
   if (state.tables.length === 0) {
     tableListMini.innerHTML = `<div class="empty-state" style="padding: 12px 4px;">No hay mesas todavía. Pulsa en cualquiera de los 6 modelos para añadirla.</div>`;
@@ -2657,19 +2784,39 @@ function updateStatsAndInspector() {
   }
 }
 
-function renderAll() {
+function renderAll(isInteractiveDrag = false) {
   const conflicts = evaluateCollisions();
   renderGridLayer();
   renderDimensionsLayer();
   renderTablesLayer();
-  renderConflictsLayer(conflicts);
+  renderConflictsLayer(conflicts, isInteractiveDrag);
   renderToolOverlay();
-  updateStatsAndInspector();
+  updateStatsAndInspector(isInteractiveDrag);
 }
 
 /* ==========================================================================
    VIEWBOX NATIVO Y COORDENADAS SVG (AJUSTE AUTOMÁTICO EN MÓVIL Y ESCRITORIO)
    ========================================================================== */
+
+let cachedInvCTM = null;
+let cachedScaleScreenToSvg = 1;
+
+function invalidateSvgCTM() {
+  cachedInvCTM = null;
+}
+
+window.addEventListener("resize", invalidateSvgCTM, { passive: true });
+
+function getSvgInverseCTM() {
+  if (!cachedInvCTM) {
+    const ctm = planSvg.getScreenCTM();
+    if (ctm) {
+      cachedInvCTM = ctm.inverse();
+      cachedScaleScreenToSvg = ctm.a ? 1 / ctm.a : 1;
+    }
+  }
+  return cachedInvCTM;
+}
 
 function updateSvgViewBox() {
   const vbW = PLAN_WIDTH_PX / state.zoom;
@@ -2683,12 +2830,13 @@ function updateSvgViewBox() {
     `${vbX.toFixed(1)} ${vbY.toFixed(1)} ${vbW.toFixed(1)} ${vbH.toFixed(1)}`
   );
   lblZoom.textContent = `${Math.round(state.zoom * 100)}%`;
+  invalidateSvgCTM();
 }
 
 function clientToSvgCoords(clientX, clientY) {
-  const ctm = planSvg.getScreenCTM();
-  if (ctm) {
-    const pt = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+  const invCtm = getSvgInverseCTM();
+  if (invCtm) {
+    const pt = new DOMPoint(clientX, clientY).matrixTransform(invCtm);
     return {
       x: Math.max(10, Math.min(PLAN_WIDTH_PX - 10, pt.x)),
       y: Math.max(10, Math.min(PLAN_HEIGHT_PX - 10, pt.y))
@@ -2705,6 +2853,11 @@ let dragState = null;
 const activePointers = new Map();
 let pinchStartDist = null;
 let pinchStartZoom = null;
+let pinchStartMid = null;
+let pinchOrigPanX = 0;
+let pinchOrigPanY = 0;
+let pendingPointerEvent = null;
+let rafDragId = 0;
 
 canvasWrapper.addEventListener("pointerdown", (e) => {
   if (
@@ -2740,13 +2893,21 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
     return;
   }
 
+  invalidateSvgCTM();
   activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
   if (activePointers.size === 2) {
     dragState = null;
+    state.activeSnapPreview = null;
     const pts = Array.from(activePointers.values());
     pinchStartDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
     pinchStartZoom = state.zoom;
+    pinchStartMid = {
+      x: (pts[0].x + pts[1].x) / 2,
+      y: (pts[0].y + pts[1].y) / 2
+    };
+    pinchOrigPanX = state.panX;
+    pinchOrigPanY = state.panY;
     return;
   }
 
@@ -2800,7 +2961,7 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
         table
       };
       canvasWrapper.setPointerCapture(e.pointerId);
-      renderAll();
+      renderAll(true);
       return;
     }
   }
@@ -2822,11 +2983,12 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
         startRot: table.rotation || 0
       };
       canvasWrapper.setPointerCapture(e.pointerId);
-      renderAll();
+      renderAll(true);
       return;
     }
   }
 
+  getSvgInverseCTM();
   dragState = {
     type: "pan",
     pointerId: e.pointerId,
@@ -2834,21 +2996,32 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
     startY: e.clientY,
     origPanX: state.panX,
     origPanY: state.panY,
+    scaleScreenToSvg: cachedScaleScreenToSvg,
     moved: false
   };
   canvasWrapper.setPointerCapture(e.pointerId);
 });
 
-canvasWrapper.addEventListener("pointermove", (e) => {
-  if (activePointers.has(e.pointerId)) {
-    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  }
+function processCoalescedPointerMove() {
+  rafDragId = 0;
+  const e = pendingPointerEvent;
+  if (!e) return;
+  pendingPointerEvent = null;
 
   if (activePointers.size === 2 && pinchStartDist > 10) {
     const pts = Array.from(activePointers.values());
     const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
     const scaleFactor = dist / pinchStartDist;
-    applyZoom(pinchStartZoom * scaleFactor);
+    state.zoom = Math.max(0.45, Math.min(3.5, pinchStartZoom * scaleFactor));
+    if (pinchStartMid) {
+      const midX = (pts[0].x + pts[1].x) / 2;
+      const midY = (pts[0].y + pts[1].y) / 2;
+      state.panX =
+        pinchOrigPanX + (midX - pinchStartMid.x) * cachedScaleScreenToSvg;
+      state.panY =
+        pinchOrigPanY + (midY - pinchStartMid.y) * cachedScaleScreenToSvg;
+    }
+    updateSvgViewBox();
     return;
   }
 
@@ -2880,6 +3053,7 @@ canvasWrapper.addEventListener("pointermove", (e) => {
     const movingTable = dragState.table;
 
     if (getCatalogSpec(movingTable.typeId).shape === "rect") {
+      const hadGroup = Boolean(movingTable.groupId);
       const magSnap = findBestMagneticSnap(
         movingTable,
         rawX,
@@ -2897,19 +3071,22 @@ canvasWrapper.addEventListener("pointermove", (e) => {
           tangentMode: magSnap.alignmentMode
         };
         state.activeSnapPreview = magSnap;
+        syncRectTableGroupsFromGeometry();
       } else {
         movingTable.x = rawX;
         movingTable.y = rawY;
         state.activeSnapPreview = null;
+        if (hadGroup) {
+          syncRectTableGroupsFromGeometry();
+        }
       }
-      syncRectTableGroupsFromGeometry();
     } else {
       movingTable.x = rawX;
       movingTable.y = rawY;
       state.activeSnapPreview = null;
     }
 
-    renderAll();
+    renderAll(true);
   } else if (dragState.type === "rotate") {
     const dx = pt.x - dragState.table.x;
     const dy = pt.y - dragState.table.y;
@@ -2919,41 +3096,68 @@ canvasWrapper.addEventListener("pointermove", (e) => {
     if (Math.abs(deg - snap15) < 3) deg = snap15 % 180;
     dragState.table.rotation = deg;
     reSnapFusedTableAfterRotation(dragState.table);
-    syncRectTableGroupsFromGeometry();
-    renderAll();
+    if (dragState.table.groupId || dragState.table.fusedTo) {
+      syncRectTableGroupsFromGeometry();
+    }
+    renderAll(true);
   } else if (dragState.type === "pan") {
     const dx = e.clientX - dragState.startX;
     const dy = e.clientY - dragState.startY;
     if (Math.hypot(dx, dy) > 4) {
       dragState.moved = true;
     }
-    const ctm = planSvg.getScreenCTM();
-    const scaleScreenToSvg = ctm && ctm.a ? 1 / ctm.a : 1;
+    const scaleScreenToSvg = dragState.scaleScreenToSvg || cachedScaleScreenToSvg || 1;
     state.panX = dragState.origPanX + dx * scaleScreenToSvg;
     state.panY = dragState.origPanY + dy * scaleScreenToSvg;
     updateSvgViewBox();
   }
-});
+}
+
+canvasWrapper.addEventListener(
+  "pointermove",
+  (e) => {
+    if (activePointers.has(e.pointerId)) {
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+    pendingPointerEvent = {
+      pointerId: e.pointerId,
+      clientX: e.clientX,
+      clientY: e.clientY
+    };
+    if (!rafDragId) {
+      rafDragId = requestAnimationFrame(processCoalescedPointerMove);
+    }
+  },
+  { passive: true }
+);
 
 function handlePointerUpOrCancel(e) {
+  if (rafDragId) {
+    cancelAnimationFrame(rafDragId);
+    processCoalescedPointerMove();
+  }
   activePointers.delete(e.pointerId);
   if (activePointers.size < 2) {
     pinchStartDist = null;
+    pinchStartMid = null;
   }
 
   if (dragState && dragState.pointerId === e.pointerId) {
-    if (dragState.type === "pan" && !dragState.moved) {
+    const finishedType = dragState.type;
+    const wasMoved = dragState.moved;
+    dragState = null;
+
+    if (finishedType === "pan" && !wasMoved) {
       state.selectedId = null;
       state.rulerLine = null;
       state.activeSnapPreview = null;
-      renderAll();
-    } else if (dragState.type === "move" || dragState.type === "rotate") {
+      renderAll(false);
+    } else if (finishedType === "move" || finishedType === "rotate") {
       state.activeSnapPreview = null;
       syncRectTableGroupsFromGeometry();
       saveToLocalStorage();
-      renderAll();
+      renderAll(false);
     }
-    dragState = null;
   }
 }
 

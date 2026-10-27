@@ -407,6 +407,9 @@ input[type="range"] {
   justify-content: center;
   padding: 8px 8px 54px 8px;
   touch-action: none;
+  contain: layout paint;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .plan-svg {
@@ -416,6 +419,7 @@ input[type="range"] {
   max-height: 100%;
   display: block;
   touch-action: none;
+  transform: translateZ(0);
 }
 
 /* Floating Zoom & Legend Controls */
@@ -424,8 +428,7 @@ input[type="range"] {
   bottom: 10px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(6px);
+  background: #ffffff;
   border: 1px solid var(--border-color);
   border-radius: 999px;
   padding: 4px 8px;
@@ -440,8 +443,7 @@ input[type="range"] {
   position: absolute;
   top: 8px;
   left: 8px;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(6px);
+  background: rgba(255, 255, 255, 0.96);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 5px 9px;

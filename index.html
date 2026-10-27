@@ -209,11 +209,8 @@
           <marker id="arrowEnd" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
             <path d="M 0 1 L 10 5 L 0 9 z" fill="#0f172a" />
           </marker>
-          <filter id="planShadow" x="-5%" y="-5%" width="110%" height="110%">
-            <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.16" />
-          </filter>
         </defs>
-        <rect x="0" y="0" width="734" height="1024" fill="#ffffff" filter="url(#planShadow)" />
+        <rect x="0" y="0" width="734" height="1024" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5" pointer-events="none" />
         <image
           id="planImage"
           href="plano.png"
@@ -222,12 +219,14 @@
           width="734"
           height="1024"
           preserveAspectRatio="none"
+          decoding="async"
+          pointer-events="none"
         />
-        <g id="gridLayer"></g>
-        <g id="dimensionsLayer"></g>
+        <g id="gridLayer" pointer-events="none"></g>
+        <g id="dimensionsLayer" pointer-events="none"></g>
         <g id="tablesLayer"></g>
         <g id="conflictsLayer"></g>
-        <g id="toolOverlayLayer"></g>
+        <g id="toolOverlayLayer" pointer-events="none"></g>
       </svg>
 
       <!-- Barra de acciones rápidas en móvil cuando hay una mesa seleccionada -->
