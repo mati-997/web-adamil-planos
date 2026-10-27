@@ -103,7 +103,8 @@ const state = {
   nextCounter: 1,
   interactionMode: "normal",
   toolPoints: [],
-  rulerLine: null
+  rulerLine: null,
+  activeSnapPreview: null
 };
 
 // Elementos DOM
@@ -598,20 +599,100 @@ function evaluateCollisions() {
 }
 
 /* ==========================================================================
-   FUSIÓN DE MESAS RECTANGULARES MANTENIENDO SU ORIENTACIÓN (MESAS EN U / L / LINEALES)
+   MOTOR MATEMÁTICO Y GEOMÉTRICO DE UNIÓN (SNAP / MERGE) DE MESAS RECTANGULARES
    ========================================================================== */
 
+const SNAP_THRESHOLD_PX = 20; // Umbral de efecto imán (15-20 px entre bordes de tablero)
+
 /**
- * Obtiene los vectores normales (hacia afuera) en coordenadas de pantalla para los 4 bordes de `table`.
+ * Obtiene el Bounding Box geométrico del tablero de una mesa en coordenadas del lienzo:
+ * `{ x, y, width, height, rotation }`
  */
-function getTableEdgesWorld(table) {
-  const axes = getTableLocalAxes(table);
-  return [
-    { key: "right_end", nx: axes.uL.x, ny: axes.uL.y },
-    { key: "left_end", nx: -axes.uL.x, ny: -axes.uL.y },
-    { key: "bottom_side", nx: axes.uW.x, ny: axes.uW.y },
-    { key: "top_side", nx: -axes.uW.x, ny: -axes.uW.y }
+function getTableBoundingBox(
+  table,
+  customX = table.x,
+  customY = table.y,
+  customRot = table.rotation || 0
+) {
+  const ppm = state.pxPerMeter;
+  const dim = getEffectiveDimensions(table);
+  return {
+    id: table.id,
+    name: table.name,
+    x: customX,
+    y: customY,
+    width: (dim.baseLength || dim.baseDiameter || 1.8) * ppm,
+    height: (dim.baseWidth || dim.baseDiameter || 0.75) * ppm,
+    rotation: customRot
+  };
+}
+
+/**
+ * Obtiene los vectores normales (hacia afuera) y tangentes en coordenadas de pantalla
+ * para los 4 bordes de una caja rectangular `{ x, y, width, height, rotation }`.
+ */
+function getBoxEdgesWorld(box) {
+  const rad = degToRad(box.rotation || 0);
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const uL = { x: cos, y: sin };
+  const uW = { x: -sin, y: cos };
+  const halfW = box.width / 2;
+  const halfH = box.height / 2;
+
+  const rawEdges = [
+    { key: "right_end", nx: uL.x, ny: uL.y, hn: halfW, ht: halfH },
+    { key: "left_end", nx: -uL.x, ny: -uL.y, hn: halfW, ht: halfH },
+    { key: "bottom_side", nx: uW.x, ny: uW.y, hn: halfH, ht: halfW },
+    { key: "top_side", nx: -uW.x, ny: -uW.y, hn: halfH, ht: halfW }
   ];
+
+  // Clasificar cada borde según su orientación visual en el plano: 'top', 'bottom', 'left', 'right'
+  const rightEdge = rawEdges.reduce((b, e) => (e.nx > b.nx ? e : b), rawEdges[0]);
+  const leftEdge = rawEdges.reduce((b, e) => (e.nx < b.nx ? e : b), rawEdges[0]);
+  const topEdge = rawEdges.reduce((b, e) => (e.ny < b.ny ? e : b), rawEdges[0]);
+  const bottomEdge = rawEdges.reduce((b, e) => (e.ny > b.ny ? e : b), rawEdges[0]);
+
+  return rawEdges.map((edge) => {
+    let side = "right";
+    if (edge.key === topEdge.key) side = "top";
+    else if (edge.key === bottomEdge.key) side = "bottom";
+    else if (edge.key === leftEdge.key) side = "left";
+    else if (edge.key === rightEdge.key) side = "right";
+
+    // Vector tangente unitario orientado siempre de izquierda a derecha (+X) o de arriba a abajo (+Y)
+    let tx = -edge.ny;
+    let ty = edge.nx;
+    if (Math.abs(tx) >= Math.abs(ty)) {
+      if (tx < 0) {
+        tx = -tx;
+        ty = -ty;
+      }
+    } else if (ty < 0) {
+      tx = -tx;
+      ty = -ty;
+    }
+
+    const midX = box.x + edge.hn * edge.nx;
+    const midY = box.y + edge.hn * edge.ny;
+
+    return {
+      ...edge,
+      side, // 'top' | 'bottom' | 'left' | 'right'
+      tx,
+      ty,
+      midX,
+      midY,
+      x1: midX - edge.ht * tx,
+      y1: midY - edge.ht * ty,
+      x2: midX + edge.ht * tx,
+      y2: midY + edge.ht * ty
+    };
+  });
+}
+
+function getTableEdgesWorld(table) {
+  return getBoxEdgesWorld(getTableBoundingBox(table));
 }
 
 /**
@@ -628,34 +709,384 @@ function getWorldSideKey(table, worldDir) {
   ) {
     return worldDir;
   }
-
   const edges = getTableEdgesWorld(table);
-  if (worldDir === "left") {
-    return edges.reduce((best, e) => (e.nx < best.nx ? e : best), edges[0]).key;
-  }
-  if (worldDir === "right") {
-    return edges.reduce((best, e) => (e.nx > best.nx ? e : best), edges[0]).key;
-  }
-  if (worldDir === "top") {
-    return edges.reduce((best, e) => (e.ny < best.ny ? e : best), edges[0]).key;
-  }
-  if (worldDir === "bottom") {
-    return edges.reduce((best, e) => (e.ny > best.ny ? e : best), edges[0]).key;
-  }
-  return null;
+  const found = edges.find((e) => e.side === worldDir);
+  return found ? found.key : null;
 }
 
-function getWorldSideLabelFromNormal(nx, ny) {
-  if (Math.abs(nx) >= Math.abs(ny)) {
-    return nx < 0 ? "lado izquierdo" : "lado derecho";
+function getWorldSideLabel(side) {
+  switch (side) {
+    case "top":
+      return "borde superior (Top)";
+    case "bottom":
+      return "borde inferior (Bottom)";
+    case "left":
+      return "borde izquierdo (Left)";
+    case "right":
+      return "borde derecho (Right)";
+    default:
+      return "borde colindante";
   }
-  return ny < 0 ? "lado superior" : "lado inferior";
+}
+
+/**
+ * Función matemática y geométrica de unión (snap/merge) entre dos mesas rectangulares:
+ * - `mesa1`: Bounding box de la mesa fija o de referencia `{ x, y, width, height, rotation }`
+ * - `mesa2`: Bounding box actual de la mesa móvil `{ x, y, width, height, rotation }`
+ * - `snapThreshold`: Umbral de proximidad en píxeles para activar el efecto imán (por defecto 20px)
+ * - `options`: `{ forceSide, forceAlignment, autoRotate }`
+ *
+ * Retorna:
+ * `{ canSnap, targetSide, newPosition: { x, y }, newOrientation, distance, alignmentMode, couplingCase, sideKey, sideLabel, guideLine, snappedCorners }`
+ */
+function calculateRectTableSnap(
+  mesa1,
+  mesa2,
+  snapThreshold = SNAP_THRESHOLD_PX,
+  options = {}
+) {
+  const rot1 = (((mesa1.rotation || 0) % 180) + 180) % 180;
+  const rot2 = (((mesa2.rotation || 0) % 180) + 180) % 180;
+
+  // Diferencia angular en [0°, 90°] entre Mesa 1 y Mesa 2
+  const rawAngleDiff = Math.abs(rot2 - rot1);
+  const angleDiff = Math.min(rawAngleDiff, 180 - rawAngleDiff);
+  const isPerpendicular = angleDiff > 45;
+
+  // Adaptar/normalizar orientación contextualmente: paralela (0°) o perpendicular en "T"/"L"/"U" (90°)
+  const newOrientation =
+    options.autoRotate === false
+      ? mesa2.rotation || 0
+      : isPerpendicular
+      ? (rot1 + 90) % 180
+      : rot1;
+
+  const rad2 = degToRad(newOrientation);
+  const uL2 = { x: Math.cos(rad2), y: Math.sin(rad2) };
+  const uW2 = { x: -Math.sin(rad2), y: Math.cos(rad2) };
+  const halfW2 = mesa2.width / 2;
+  const halfH2 = mesa2.height / 2;
+
+  const edges1 = getBoxEdgesWorld(mesa1);
+  const dx = mesa2.x - mesa1.x;
+  const dy = mesa2.y - mesa1.y;
+
+  let bestCandidate = null;
+
+  for (const edge of edges1) {
+    if (options.forceSide && options.forceSide !== "auto") {
+      const matchesSide =
+        edge.side === options.forceSide || edge.key === options.forceSide;
+      if (!matchesSide) continue;
+    }
+
+    // Semianchos de Mesa 2 proyectados sobre la normal (n) y la tangente (t) de este borde de Mesa 1
+    const dotL2N = Math.abs(uL2.x * edge.nx + uL2.y * edge.ny);
+    const dotW2N = Math.abs(uW2.x * edge.nx + uW2.y * edge.ny);
+    const dotL2T = Math.abs(uL2.x * edge.tx + uL2.y * edge.ty);
+    const dotW2T = Math.abs(uW2.x * edge.tx + uW2.y * edge.ty);
+
+    const hn2 = halfW2 * dotL2N + halfH2 * dotW2N;
+    const ht2 = halfW2 * dotL2T + halfH2 * dotW2T;
+
+    // Distancia centro-a-centro exacta a lo largo de la normal para que los bordes queden pegados sin hueco ni solape
+    const dTarget = edge.hn + hn2;
+    const dCurr = dx * edge.nx + dy * edge.ny;
+    const tCurr = dx * edge.tx + dy * edge.ty;
+
+    // Distancia normal entre el borde de Mesa 1 y el borde enfrentado de Mesa 2
+    const normalGap = Math.abs(dCurr - dTarget);
+
+    // Puntos de anclaje tangencial a lo largo del borde:
+    // - 'start': esquina superior / izquierda enrasada (-edge.ht + ht2)
+    // - 'center': centrado en el borde (0, Directo o acoplamiento en "T")
+    // - 'end': esquina inferior / derecha enrasada (+edge.ht - ht2)
+    const diffT = Math.abs(edge.ht - ht2);
+    const tStart = -edge.ht + ht2;
+    const tEnd = edge.ht - ht2;
+    const stops = [
+      { mode: "start", t: tStart },
+      { mode: "center", t: 0 },
+      { mode: "end", t: tEnd }
+    ];
+
+    let chosenStop = stops[1]; // 'center' por defecto cuando diffT ≈ 0
+    if (options.forceAlignment) {
+      chosenStop =
+        stops.find((s) => s.mode === options.forceAlignment) || stops[1];
+    } else if (diffT > 2) {
+      chosenStop = stops.reduce((best, s) =>
+        Math.abs(tCurr - s.t) < Math.abs(tCurr - best.t) ? s : best
+      );
+    }
+
+    // Exceso tangencial fuera del tramo de solape válido
+    const tangentExcess = Math.max(0, Math.abs(tCurr) - diffT);
+    const edgeDistance = Math.hypot(normalGap, tangentExcess);
+    const anchorDistance = Math.hypot(dCurr - dTarget, tCurr - chosenStop.t);
+
+    // Penalizar bordes situados en el hemisferio opuesto (cuando la mesa está al otro lado de Mesa 1)
+    const wrongHemispherePenalty = dCurr < 0 ? 1000 + Math.abs(dCurr) * 4 : 0;
+    const score = edgeDistance + wrongHemispherePenalty + anchorDistance * 0.05;
+
+    if (!bestCandidate || score < bestCandidate.score) {
+      bestCandidate = {
+        edge,
+        hn2,
+        ht2,
+        dTarget,
+        dCurr,
+        tCurr,
+        tSnapped: chosenStop.t,
+        alignmentMode: chosenStop.mode,
+        edgeDistance,
+        anchorDistance,
+        score
+      };
+    }
+  }
+
+  if (!bestCandidate) {
+    return {
+      canSnap: false,
+      targetSide: null,
+      newPosition: { x: mesa2.x, y: mesa2.y },
+      newOrientation: mesa2.rotation || 0,
+      distance: Infinity
+    };
+  }
+
+  const { edge, dTarget, tSnapped, alignmentMode, edgeDistance, dCurr } =
+    bestCandidate;
+
+  const newX = mesa1.x + dTarget * edge.nx + tSnapped * edge.tx;
+  const newY = mesa1.y + dTarget * edge.ny + tSnapped * edge.ty;
+
+  const canSnap =
+    Boolean(options.forceSide) ||
+    (dCurr > -edge.hn * 0.25 && edgeDistance <= snapThreshold);
+
+  let couplingCase = "horizontal_direct";
+  if (isPerpendicular) {
+    couplingCase =
+      alignmentMode === "center" ? "perpendicular_T" : "perpendicular_corner";
+  } else if (edge.side === "top" || edge.side === "bottom") {
+    couplingCase = "vertical_direct";
+  } else {
+    couplingCase = "horizontal_direct";
+  }
+
+  // Segmento local en coordenadas de Mesa 1 para compatibilidad con vistas de acople
+  const rad1 = degToRad(mesa1.rotation || 0);
+  const cos1 = Math.cos(rad1);
+  const sin1 = Math.sin(rad1);
+  const toLocal1 = (wx, wy) => {
+    const rx = wx - mesa1.x;
+    const ry = wy - mesa1.y;
+    return {
+      x: rx * cos1 + ry * sin1,
+      y: -rx * sin1 + ry * cos1
+    };
+  };
+  const loc1 = toLocal1(edge.x1, edge.y1);
+  const loc2 = toLocal1(edge.x2, edge.y2);
+
+  return {
+    canSnap,
+    targetSide: edge.side, // 'top' | 'bottom' | 'left' | 'right'
+    newPosition: { x: newX, y: newY },
+    newOrientation,
+    distance: edgeDistance,
+    alignmentMode, // 'center' | 'start' | 'end'
+    couplingCase, // 'horizontal_direct' | 'vertical_direct' | 'perpendicular_T' | 'perpendicular_corner'
+    sideKey: edge.key, // 'right_end' | 'left_end' | 'bottom_side' | 'top_side'
+    sideLabel: getWorldSideLabel(edge.side),
+    guideLine: {
+      x1: edge.x1,
+      y1: edge.y1,
+      x2: edge.x2,
+      y2: edge.y2,
+      midX: edge.midX,
+      midY: edge.midY,
+      nx: edge.nx,
+      ny: edge.ny
+    },
+    edgeSegmentLocal: {
+      x1: loc1.x,
+      y1: loc1.y,
+      x2: loc2.x,
+      y2: loc2.y
+    }
+  };
+}
+
+/**
+ * Busca la mejor unión magnética para `movingTable` en la posición `(candidateX, candidateY)`
+ * frente al resto de mesas rectangulares del plano.
+ */
+function findBestMagneticSnap(
+  movingTable,
+  candidateX = movingTable.x,
+  candidateY = movingTable.y,
+  snapThreshold = SNAP_THRESHOLD_PX
+) {
+  if (!movingTable || getCatalogSpec(movingTable.typeId).shape !== "rect") {
+    return null;
+  }
+
+  const movingBox = getTableBoundingBox(
+    movingTable,
+    candidateX,
+    candidateY,
+    movingTable.rotation || 0
+  );
+
+  let bestSnap = null;
+
+  for (const other of state.tables) {
+    if (other.id === movingTable.id) continue;
+    if (getCatalogSpec(other.typeId).shape !== "rect") continue;
+
+    const otherBox = getTableBoundingBox(other);
+    const snap = calculateRectTableSnap(otherBox, movingBox, snapThreshold);
+    if (snap.canSnap) {
+      if (!bestSnap || snap.distance < bestSnap.distance) {
+        bestSnap = {
+          ...snap,
+          anchorTable: other,
+          movingTable
+        };
+      }
+    }
+  }
+
+  return bestSnap;
+}
+
+/**
+ * Calcula la distancia en píxeles entre los tableros base (sin contar el halo de sillas)
+ * de dos mesas rectangulares para detectar si están físicamente pegadas.
+ */
+function computeBaseTabletopDistancePx(tableA, tableB) {
+  const ppm = state.pxPerMeter;
+  const dimA = getEffectiveDimensions(tableA);
+  const dimB = getEffectiveDimensions(tableB);
+  if (dimA.shape !== "rect" || dimB.shape !== "rect") return Infinity;
+
+  const cornersA = getRectCornersMeters(
+    tableA.x,
+    tableA.y,
+    dimA.baseLength * ppm,
+    dimA.baseWidth * ppm,
+    tableA.rotation || 0
+  );
+  const cornersB = getRectCornersMeters(
+    tableB.x,
+    tableB.y,
+    dimB.baseLength * ppm,
+    dimB.baseWidth * ppm,
+    tableB.rotation || 0
+  );
+
+  if (polygonsOverlapSAT(cornersA, cornersB)) {
+    return 0;
+  }
+
+  let bestDist = Infinity;
+  for (const p of cornersA) {
+    for (let j = 0; j < 4; j++) {
+      const b1 = cornersB[j];
+      const b2 = cornersB[(j + 1) % 4];
+      const q = closestPointOnSegment(p.x, p.y, b1.x, b1.y, b2.x, b2.y);
+      const d = Math.hypot(p.x - q.x, p.y - q.y);
+      if (d < bestDist) bestDist = d;
+    }
+  }
+  for (const p of cornersB) {
+    for (let i = 0; i < 4; i++) {
+      const a1 = cornersA[i];
+      const a2 = cornersA[(i + 1) % 4];
+      const q = closestPointOnSegment(p.x, p.y, a1.x, a1.y, a2.x, a2.y);
+      const d = Math.hypot(p.x - q.x, p.y - q.y);
+      if (d < bestDist) bestDist = d;
+    }
+  }
+  return bestDist;
+}
+
+/**
+ * Sincroniza automáticamente los grupos (`groupId`) de mesas rectangulares según qué mesas
+ * están realmente en contacto borde con borde (distancia de tablero <= 3 px).
+ * Si el usuario separa una mesa arrastrándola fuera del imán, sale del grupo automáticamente;
+ * si la acopla con el imán a otra mesa, se integran en el mismo grupo.
+ */
+function syncRectTableGroupsFromGeometry() {
+  const rectTables = state.tables.filter(
+    (t) => getCatalogSpec(t.typeId).shape === "rect"
+  );
+  const n = rectTables.length;
+  const adj = new Map();
+  for (const t of rectTables) {
+    adj.set(t.id, []);
+  }
+
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const a = rectTables[i];
+      const b = rectTables[j];
+      const distPx = computeBaseTabletopDistancePx(a, b);
+      if (distPx <= 3.0) {
+        adj.get(a.id).push(b);
+        adj.get(b.id).push(a);
+      }
+    }
+  }
+
+  const visited = new Set();
+  for (const t of rectTables) {
+    if (visited.has(t.id)) continue;
+    const neighbors = adj.get(t.id) || [];
+    if (neighbors.length === 0) {
+      visited.add(t.id);
+      t.groupId = null;
+      t.fusedTo = null;
+      if (t.seatsPerSide > 3 && (t.joinedCount || 1) === 1) {
+        t.seatsPerSide = 3;
+      }
+      normalizeTableConfig(t);
+      continue;
+    }
+
+    // BFS para obtener la componente conexa de mesas acopladas
+    const component = [];
+    const queue = [t];
+    visited.add(t.id);
+    while (queue.length > 0) {
+      const curr = queue.shift();
+      component.push(curr);
+      for (const nb of adj.get(curr.id) || []) {
+        if (!visited.has(nb.id)) {
+          visited.add(nb.id);
+          queue.push(nb);
+        }
+      }
+    }
+
+    const existingGroupId =
+      component.map((m) => m.groupId).find(Boolean) ||
+      "grp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+
+    for (const m of component) {
+      m.groupId = existingGroupId;
+      normalizeTableConfig(m);
+    }
+  }
 }
 
 /**
  * Calcula el acople exacto borde con borde entre `anchor` y `moving`
- * manteniendo intacta la rotación de ambas mesas (`anchor.rotation` y `moving.rotation`).
- * Soporta forzar el lado ("left", "right", "top", "bottom" o clave local).
+ * usando `calculateRectTableSnap`. Soporta forzar el lado ("left", "right", "top", "bottom")
+ * y el modo de alineación ("start", "center", "end").
  */
 function computePairSnap(
   anchor,
@@ -663,206 +1094,64 @@ function computePairSnap(
   forceSideKey = null,
   forceTangentMode = null
 ) {
-  const ppm = state.pxPerMeter;
   const dimA = getEffectiveDimensions(anchor);
   const dimB = getEffectiveDimensions(moving);
-
   const axesA = getTableLocalAxes(anchor);
   const axesB = getTableLocalAxes(moving);
-
-  const halfLA = (dimA.baseLength * ppm) / 2;
-  const halfWA = (dimA.baseWidth * ppm) / 2;
-  const halfLB = (dimB.baseLength * ppm) / 2;
-  const halfWB = (dimB.baseWidth * ppm) / 2;
-
   const dotLL = Math.abs(axesB.uL.x * axesA.uL.x + axesB.uL.y * axesA.uL.y);
-  const dotWL = Math.abs(axesB.uW.x * axesA.uL.x + axesB.uW.y * axesA.uL.y);
-  const dotLW = Math.abs(axesB.uL.x * axesA.uW.x + axesB.uL.y * axesA.uW.y);
-  const dotWW = Math.abs(axesB.uW.x * axesA.uW.x + axesB.uW.y * axesA.uW.y);
 
-  // Semianchos de B proyectados sobre los ejes L y W de A
-  const extentBL = halfLB * dotLL + halfWB * dotWL;
-  const extentBW = halfLB * dotLW + halfWB * dotWW;
+  let effectiveSide = forceSideKey;
+  let effectiveAlignment = forceTangentMode;
 
-  const combinedL = halfLA + extentBL;
-  const combinedW = halfWA + extentBW;
-
-  const dx = moving.x - anchor.x;
-  const dy = moving.y - anchor.y;
-
-  const localL = dx * axesA.uL.x + dy * axesA.uL.y;
-  const localW = dx * axesA.uW.x + dy * axesA.uW.y;
-
-  const normL = Math.abs(localL) / Math.max(1, combinedL);
-  const normW = Math.abs(localW) / Math.max(1, combinedW);
-
-  let sideKey = getWorldSideKey(anchor, forceSideKey);
-  let symmetricTangentMode = forceTangentMode;
-
-  const peers = anchor.groupId
-    ? getGroupMembers(anchor).filter(
-        (p) => p.id !== anchor.id && p.id !== moving.id
-      )
-    : [];
-
-  // Si `anchor` y `moving` son perpendiculares (ej. formando una L o una U):
-  if (dotLL < 0.5) {
-    // Si ya hay otra pata perpendicular en el grupo de `anchor`, heredar su alineación de esquina
+  // Si se llama en modo automático (por botón) para mesas perpendiculares (formando U o L)
+  // y la mesa ancla ya tiene otra pata en un lado, elegir el lado libre opuesto por defecto.
+  if (!effectiveSide && anchor.groupId && dotLL < 0.5) {
+    const peers = getGroupMembers(anchor).filter(
+      (p) => p.id !== anchor.id && p.id !== moving.id
+    );
     for (const peer of peers) {
       const axesP = getTableLocalAxes(peer);
       const peerDotLL = Math.abs(
         axesP.uL.x * axesA.uL.x + axesP.uL.y * axesA.uL.y
       );
       if (peerDotLL < 0.5) {
-        if (!symmetricTangentMode && peer.fusedTo && peer.fusedTo.tangentMode) {
-          symmetricTangentMode = peer.fusedTo.tangentMode;
+        if (!effectiveAlignment && peer.fusedTo && peer.fusedTo.tangentMode) {
+          effectiveAlignment = peer.fusedTo.tangentMode;
         }
-        if (!sideKey) {
-          const leftSideKey = getWorldSideKey(anchor, "left");
-          const rightSideKey = getWorldSideKey(anchor, "right");
-          if (peer.x < anchor.x - 4) {
-            sideKey = rightSideKey;
-          } else if (peer.x > anchor.x + 4) {
-            sideKey = leftSideKey;
-          }
+        if (peer.x < anchor.x - 4) {
+          effectiveSide = "right";
+        } else if (peer.x > anchor.x + 4) {
+          effectiveSide = "left";
         }
       }
     }
-
-    // En modo automático para mesas perpendiculares, acoplar al lado izquierdo o derecho según posición X
-    if (!sideKey) {
-      sideKey = getWorldSideKey(anchor, moving.x < anchor.x ? "left" : "right");
-    }
   }
 
-  if (!sideKey) {
-    if (normL >= normW) {
-      sideKey = localL >= 0 ? "right_end" : "left_end";
-    } else {
-      sideKey = localW >= 0 ? "bottom_side" : "top_side";
-    }
-  }
-
-  let sideLabel;
-  let edgeSegmentLocal;
-  let edgeMidWorld;
-  let targetL;
-  let targetW;
-  let tangentMode = symmetricTangentMode || "start";
-
-  if (sideKey === "right_end" || sideKey === "left_end") {
-    const sign = sideKey === "right_end" ? 1 : -1;
-    const nx = sign * axesA.uL.x;
-    const ny = sign * axesA.uL.y;
-    sideLabel = getWorldSideLabelFromNormal(nx, ny);
-    const ex = sign * halfLA;
-    edgeSegmentLocal = { x1: ex, y1: -halfWA, x2: ex, y2: halfWA };
-    edgeMidWorld = {
-      x: anchor.x + ex * axesA.uL.x,
-      y: anchor.y + ex * axesA.uL.y
-    };
-    targetL = sign * combinedL;
-
-    const signW =
-      Math.abs(axesA.uW.y) >= Math.abs(axesA.uW.x)
-        ? axesA.uW.y >= 0
-          ? 1
-          : -1
-        : axesA.uW.x >= 0
-        ? 1
-        : -1;
-    const cStart = signW * (-halfWA + extentBW); // alinea borde superior/izquierdo del mundo
-    const cEnd = signW * (halfWA - extentBW); // alinea borde inferior/derecho del mundo
-
-    if (Math.abs(halfWA - extentBW) <= 2) {
-      targetW = 0;
-      tangentMode = "start";
-    } else if (symmetricTangentMode === "start") {
-      targetW = cStart;
-      tangentMode = "start";
-    } else if (symmetricTangentMode === "end") {
-      targetW = cEnd;
-      tangentMode = "end";
-    } else if (symmetricTangentMode === "center") {
-      targetW = 0;
-      tangentMode = "center";
-    } else {
-      // Por defecto en mesas en U/L alinea el borde superior (U abierta hacia abajo)
-      // salvo que la mesa móvil esté claramente por encima de la mesa ancla
-      if (moving.y < anchor.y - halfWA) {
-        targetW = cEnd;
-        tangentMode = "end";
-      } else {
-        targetW = cStart;
-        tangentMode = "start";
-      }
-    }
-  } else {
-    const sign = sideKey === "bottom_side" ? 1 : -1;
-    const nx = sign * axesA.uW.x;
-    const ny = sign * axesA.uW.y;
-    sideLabel = getWorldSideLabelFromNormal(nx, ny);
-    const ey = sign * halfWA;
-    edgeSegmentLocal = { x1: -halfLA, y1: ey, x2: halfLA, y2: ey };
-    edgeMidWorld = {
-      x: anchor.x + ey * axesA.uW.x,
-      y: anchor.y + ey * axesA.uW.y
-    };
-    targetW = sign * combinedW;
-
-    const signL =
-      Math.abs(axesA.uL.x) >= Math.abs(axesA.uL.y)
-        ? axesA.uL.x >= 0
-          ? 1
-          : -1
-        : axesA.uL.y >= 0
-        ? 1
-        : -1;
-    const cStart = signL * (-halfLA + extentBL); // esquina izquierda/superior del mundo
-    const cEnd = signL * (halfLA - extentBL); // esquina derecha/inferior del mundo
-
-    if (Math.abs(halfLA - extentBL) <= 2) {
-      targetL = 0;
-      tangentMode = "start";
-    } else if (symmetricTangentMode === "start") {
-      targetL = cStart;
-      tangentMode = "start";
-    } else if (symmetricTangentMode === "end") {
-      targetL = cEnd;
-      tangentMode = "end";
-    } else if (symmetricTangentMode === "center") {
-      targetL = 0;
-      tangentMode = "center";
-    } else {
-      if (
-        Math.abs(axesA.uL.x) >= Math.abs(axesA.uL.y)
-          ? moving.x < anchor.x
-          : moving.y < anchor.y
-      ) {
-        targetL = cStart;
-        tangentMode = "start";
-      } else {
-        targetL = cEnd;
-        tangentMode = "end";
-      }
-    }
-  }
-
-  const relX = targetL * axesA.uL.x + targetW * axesA.uW.x;
-  const relY = targetL * axesA.uL.y + targetW * axesA.uW.y;
+  const boxA = getTableBoundingBox(anchor);
+  const boxB = getTableBoundingBox(moving);
+  const snap = calculateRectTableSnap(boxA, boxB, Infinity, {
+    forceSide: effectiveSide,
+    forceAlignment: effectiveAlignment,
+    autoRotate: false
+  });
 
   return {
     anchor,
     moving,
-    sideKey,
-    sideLabel,
-    tangentMode,
-    edgeSegmentLocal,
-    edgeMidWorld,
-    targetX: anchor.x + relX,
-    targetY: anchor.y + relY,
-    relX,
-    relY,
+    targetSide: snap.targetSide,
+    sideKey: snap.sideKey,
+    sideLabel: snap.sideLabel,
+    tangentMode: snap.alignmentMode,
+    couplingCase: snap.couplingCase,
+    edgeSegmentLocal: snap.edgeSegmentLocal,
+    edgeMidWorld: { x: snap.guideLine.midX, y: snap.guideLine.midY },
+    guideLine: snap.guideLine,
+    targetX: snap.newPosition.x,
+    targetY: snap.newPosition.y,
+    newOrientation: snap.newOrientation,
+    distancePx: snap.distance,
+    relX: snap.newPosition.x - anchor.x,
+    relY: snap.newPosition.y - anchor.y,
     dotLL,
     dimA,
     dimB
@@ -871,7 +1160,7 @@ function computePairSnap(
 
 /**
  * Elige qué mesa de un grupo debe actuar como ancla principal al acoplar `moving`.
- * Si `moving` es vertical, prioriza la mesa horizontal del grupo (travesaño de la U).
+ * Si `moving` es vertical, prioriza la mesa horizontal del grupo (travesaño de la U o T).
  */
 function chooseAnchorInGroup(groupMembers, moving) {
   if (!groupMembers || groupMembers.length === 0) return null;
@@ -928,25 +1217,26 @@ function analyzeColindanteRect(table, maxDistMeters = 5.0) {
     }
   }
 
-  // Si la mesa ya pertenece a un grupo y la otra mesa rectangular está muy lejos (ej. otra sala),
-  // ignorarla para que los botones Izq./Dcha. permitan cambiar de lado dentro del propio grupo.
   if (!bestOther || (table.groupId && bestDist > maxDistMeters)) {
     return null;
   }
 
-  const snapOnTable = computePairSnap(table, bestOther);
+  const snapOnOther = computePairSnap(bestOther, table);
 
   return {
     table,
     other: bestOther,
     distanceMeters: bestDist,
-    sideKey: snapOnTable.sideKey,
-    sideLabel: snapOnTable.sideLabel,
-    tangentMode: snapOnTable.tangentMode,
-    edgeSegmentLocal: snapOnTable.edgeSegmentLocal,
-    edgeMidWorld: snapOnTable.edgeMidWorld,
-    dimA: snapOnTable.dimA,
-    dimB: snapOnTable.dimB
+    targetSide: snapOnOther.targetSide,
+    sideKey: snapOnOther.sideKey,
+    sideLabel: snapOnOther.sideLabel,
+    tangentMode: snapOnOther.tangentMode,
+    couplingCase: snapOnOther.couplingCase,
+    edgeSegmentLocal: snapOnOther.edgeSegmentLocal,
+    edgeMidWorld: snapOnOther.edgeMidWorld,
+    guideLine: snapOnOther.guideLine,
+    dimA: snapOnOther.dimA,
+    dimB: snapOnOther.dimB
   };
 }
 
@@ -969,7 +1259,7 @@ function findBestRectFusionTarget() {
 }
 
 /**
- * Cambia de lado (al lado izquierdo o derecho de su mesa ancla) una mesa que ya está fusionada.
+ * Cambia de lado (al lado izquierdo, derecho, superior o inferior de su mesa ancla) una mesa que ya está fusionada.
  */
 function switchFusedTableSide(table, direction) {
   if (!table || !table.groupId) return false;
@@ -987,8 +1277,6 @@ function switchFusedTableSide(table, direction) {
       (m) => m.fusedTo && m.fusedTo.anchorId === table.id
     );
     if (child && members.length === 2) {
-      // Si el usuario seleccionó la mesa horizontal/ancla en un grupo de 2 y pulsa Izq./Dcha.,
-      // mover la pata acoplada al lado izquierdo o derecho de esta mesa
       const axesT = getTableLocalAxes(table);
       const axesC = getTableLocalAxes(child);
       if (Math.abs(axesT.uL.x) >= Math.abs(axesC.uL.x)) {
@@ -1015,26 +1303,24 @@ function switchFusedTableSide(table, direction) {
   moving.fusedTo = {
     anchorId: anchor.id,
     sideKey: snap.sideKey,
+    targetSide: snap.targetSide,
     tangentMode: snap.tangentMode
   };
 
+  syncRectTableGroupsFromGeometry();
   saveToLocalStorage();
   renderAll();
   return true;
 }
 
 /**
- * Fusiona dos mesas rectangulares colindantes por el lado indicado ("auto", "left" o "right"),
- * manteniendo cada mesa su propia orientación (permite formar mesas en U, en L o lineales).
- * Si la mesa ya está fusionada y se pulsa "left" o "right" sin otra mesa cercana, cambia la mesa a ese lado.
+ * Fusiona dos mesas rectangulares colindantes por el lado indicado ("auto", "left", "right", "top", "bottom").
  */
 function fuseWithColindanteRect(targetTable, direction = "auto") {
   const nearbyInfo = targetTable
     ? analyzeColindanteRect(targetTable, 4.5)
     : null;
 
-  // Si la mesa seleccionada ya está en un grupo y no hay otra mesa suelta cerca (o ya es una pata acoplada),
-  // pulsar Izq. o Dcha. mueve esa mesa directamente al lado izquierdo o derecho de su grupo.
   if (
     targetTable &&
     targetTable.groupId &&
@@ -1064,7 +1350,7 @@ function fuseWithColindanteRect(targetTable, direction = "auto") {
       if (switchFusedTableSide(targetTable, direction)) return;
     }
     alert(
-      "Coloca al menos 2 mesas rectangulares para acoplarlas hacia el lado izquierdo o derecho."
+      "Coloca al menos 2 mesas rectangulares para acoplarlas por su borde más cercano."
     );
     return;
   }
@@ -1085,9 +1371,6 @@ function fuseWithColindanteRect(targetTable, direction = "auto") {
     movingGroup = groupA;
     anchor = chooseAnchorInGroup(groupB, moving);
   } else {
-    // Ambos grupos tienen el mismo tamaño (ej. 2 mesas sueltas):
-    // Si una es horizontal y la otra es vertical, la horizontal actúa como base (travesaño de la U)
-    // y la vertical se acopla a su izquierda o derecha.
     const axesA = getTableLocalAxes(info.table);
     const axesB = getTableLocalAxes(info.other);
     const aHoriz = Math.abs(axesA.uL.x) >= Math.abs(axesA.uL.y);
@@ -1109,7 +1392,12 @@ function fuseWithColindanteRect(targetTable, direction = "auto") {
   }
 
   const forceSide =
-    direction === "left" || direction === "right" ? direction : null;
+    direction === "left" ||
+    direction === "right" ||
+    direction === "top" ||
+    direction === "bottom"
+      ? direction
+      : null;
   const snap = computePairSnap(anchor, moving, forceSide);
   const shiftX = snap.targetX - moving.x;
   const shiftY = snap.targetY - moving.y;
@@ -1131,10 +1419,10 @@ function fuseWithColindanteRect(targetTable, direction = "auto") {
   moving.fusedTo = {
     anchorId: anchor.id,
     sideKey: snap.sideKey,
+    targetSide: snap.targetSide,
     tangentMode: snap.tangentMode
   };
 
-  // Si se unen alineadas extremo con extremo con la misma orientación, aplicar 7 sillas cada 2 mesas (4 + 3 = 7)
   if (
     snap.dotLL > 0.9 &&
     (snap.sideKey === "right_end" || snap.sideKey === "left_end")
@@ -1156,13 +1444,14 @@ function fuseWithColindanteRect(targetTable, direction = "auto") {
     }
   }
 
+  syncRectTableGroupsFromGeometry();
   saveToLocalStorage();
   renderAll();
 }
 
 /**
  * Re-acopla una mesa fusionada cuando el usuario cambia su ángulo de rotación,
- * manteniendo el lado (izquierdo o derecho) y esquina de unión con su mesa ancla.
+ * manteniendo el lado y modo de alineación con su mesa ancla.
  */
 function reSnapFusedTableAfterRotation(table) {
   if (!table || !table.groupId) return;
@@ -1174,12 +1463,13 @@ function reSnapFusedTableAfterRotation(table) {
       const snap = computePairSnap(
         anchor,
         table,
-        table.fusedTo.sideKey,
+        table.fusedTo.targetSide || table.fusedTo.sideKey,
         table.fusedTo.tangentMode
       );
       table.x = snap.targetX;
       table.y = snap.targetY;
       table.fusedTo.sideKey = snap.sideKey;
+      table.fusedTo.targetSide = snap.targetSide;
       table.fusedTo.tangentMode = snap.tangentMode;
       return;
     }
@@ -1191,15 +1481,15 @@ function reSnapFusedTableAfterRotation(table) {
       t.fusedTo.anchorId === table.id
   );
   if (child && getGroupMembers(table).length === 2) {
-    const preferredSide = table.x < child.x ? "left" : "right";
-    const snap = computePairSnap(child, table, preferredSide);
+    const snap = computePairSnap(child, table);
     table.x = snap.targetX;
     table.y = snap.targetY;
   }
 }
 
 /**
- * Cambia la esquina de alineación (arriba <-> abajo, o izquierda <-> derecha) de una mesa fusionada.
+ * Alterna la posición de alineación a lo largo del borde ('start' -> 'center' [en T] -> 'end')
+ * de una mesa fusionada.
  */
 function cycleFusedCornerAlignment(table) {
   if (!table) return;
@@ -1222,13 +1512,14 @@ function cycleFusedCornerAlignment(table) {
   if (bondOwner.fusedTo && bondOwner.fusedTo.anchorId) {
     const anchor = state.tables.find((t) => t.id === bondOwner.fusedTo.anchorId);
     if (anchor) {
-      const nextMode =
-        bondOwner.fusedTo.tangentMode === "start" ? "end" : "start";
+      const order = ["start", "center", "end"];
+      const idx = order.indexOf(bondOwner.fusedTo.tangentMode || "start");
+      const nextMode = order[(idx + 1) % order.length];
       bondOwner.fusedTo.tangentMode = nextMode;
       const snap = computePairSnap(
         anchor,
         bondOwner,
-        bondOwner.fusedTo.sideKey,
+        bondOwner.fusedTo.targetSide || bondOwner.fusedTo.sideKey,
         nextMode
       );
       bondOwner.x = snap.targetX;
@@ -1252,8 +1543,8 @@ function separateTableFromGroup(table) {
       const dx = table.x - cx;
       const dy = table.y - cy;
       const dist = Math.hypot(dx, dy) || 1;
-      table.x += (dx / dist) * 12;
-      table.y += (dy / dist) * 12;
+      table.x += (dx / dist) * 24;
+      table.y += (dy / dist) * 24;
     }
     table.groupId = null;
     table.fusedTo = null;
@@ -1262,6 +1553,7 @@ function separateTableFromGroup(table) {
         t.fusedTo = null;
       }
     }
+    syncRectTableGroupsFromGeometry();
     cleanupOrphanGroups();
     if (table.seatsPerSide > 3 && (table.joinedCount || 1) === 1) {
       table.seatsPerSide = 3;
@@ -1858,17 +2150,6 @@ function renderTablesLayer() {
       }
 
       if (isSelected) {
-        // Resaltar en azul el lado de esta mesa rectangular que está orientado hacia la mesa colindante
-        const colInfo = analyzeColindanteRect(table);
-        if (colInfo && colInfo.edgeSegmentLocal) {
-          const seg = colInfo.edgeSegmentLocal;
-          innerSvg += `<line x1="${seg.x1.toFixed(1)}" y1="${seg.y1.toFixed(
-            1
-          )}" x2="${seg.x2.toFixed(1)}" y2="${seg.y2.toFixed(
-            1
-          )}" stroke="#2563eb" stroke-width="4.5" stroke-linecap="round" />`;
-        }
-
         const selL = effL + 8;
         const selW = effW + 8;
         innerSvg += `<rect class="selection-outline" x="${(-selL / 2).toFixed(
@@ -1994,16 +2275,92 @@ function renderConflictsLayer(conflicts) {
     `;
   }
 
-  // Si la mesa seleccionada es rectangular, mostrar controles rápidos en el plano para fusionar a Izq., Auto o Dcha.
-  if (sel && getCatalogSpec(sel.typeId).shape === "rect") {
+  // Retroalimentación visual en vivo cuando el efecto imán (snap) está activo durante el arrastre
+  if (
+    state.activeSnapPreview &&
+    state.activeSnapPreview.canSnap &&
+    state.activeSnapPreview.guideLine
+  ) {
+    const snap = state.activeSnapPreview;
+    const gl = snap.guideLine;
+    const caseLabels = {
+      horizontal_direct: "Horizontal Directo",
+      vertical_direct: "Vertical Directo",
+      perpendicular_T: 'Acoplamiento en "T"',
+      perpendicular_corner: "Esquina en L / U"
+    };
+    const caseText = caseLabels[snap.couplingCase] || "Acople magnético";
+    const snapLabel = `🧲 Imán [${snap.targetSide}]: ${caseText}`;
+    const pillW = snapLabel.length * 5.8 + 18;
+    const badgeX = Math.max(
+      pillW / 2 + 8,
+      Math.min(PLAN_WIDTH_PX - pillW / 2 - 8, gl.midX)
+    );
+    const badgeY = Math.max(18, gl.midY - 18);
+
+    html += `
+      <g pointer-events="none">
+        <line x1="${gl.x1.toFixed(1)}" y1="${gl.y1.toFixed(
+      1
+    )}" x2="${gl.x2.toFixed(1)}" y2="${gl.y2.toFixed(
+      1
+    )}" stroke="#06b6d4" stroke-width="10" stroke-linecap="round" opacity="0.35" />
+        <line x1="${gl.x1.toFixed(1)}" y1="${gl.y1.toFixed(
+      1
+    )}" x2="${gl.x2.toFixed(1)}" y2="${gl.y2.toFixed(
+      1
+    )}" stroke="#0284c7" stroke-width="4" stroke-linecap="round" />
+        <circle cx="${gl.x1.toFixed(1)}" cy="${gl.y1.toFixed(
+      1
+    )}" r="4" fill="#06b6d4" stroke="#ffffff" stroke-width="1.5" />
+        <circle cx="${gl.x2.toFixed(1)}" cy="${gl.y2.toFixed(
+      1
+    )}" r="4" fill="#06b6d4" stroke="#ffffff" stroke-width="1.5" />
+        <circle cx="${gl.midX.toFixed(1)}" cy="${gl.midY.toFixed(
+      1
+    )}" r="4.5" fill="#0284c7" stroke="#ffffff" stroke-width="1.5" />
+        <g transform="translate(${badgeX.toFixed(1)}, ${badgeY.toFixed(1)})">
+          <rect x="${(-pillW / 2).toFixed(1)}" y="-10" width="${pillW.toFixed(
+      1
+    )}" height="20" rx="10" fill="#0284c7" stroke="#ffffff" stroke-width="1.5" />
+          <text x="0" y="3.5" text-anchor="middle" font-size="9.5" font-weight="700" fill="#ffffff">${snapLabel}</text>
+        </g>
+      </g>
+    `;
+  }
+
+  // Si la mesa seleccionada es rectangular, mostrar línea guía del borde más cercano y controles rápidos
+  if (
+    sel &&
+    getCatalogSpec(sel.typeId).shape === "rect" &&
+    !(state.activeSnapPreview && state.activeSnapPreview.canSnap)
+  ) {
     const colInfo = analyzeColindanteRect(sel, 3.5);
     if (colInfo && colInfo.other && colInfo.distanceMeters <= 3.5) {
+      const gl = colInfo.guideLine;
       const x1 = colInfo.edgeMidWorld.x;
       const y1 = colInfo.edgeMidWorld.y;
-      const x2 = colInfo.other.x;
-      const y2 = colInfo.other.y;
+      const x2 = sel.x;
+      const y2 = sel.y;
       const mx = Math.max(115, Math.min(PLAN_WIDTH_PX - 115, (x1 + x2) / 2));
       const my = Math.max(25, Math.min(PLAN_HEIGHT_PX - 40, (y1 + y2) / 2 + 12));
+
+      if (gl) {
+        html += `
+          <g pointer-events="none">
+            <line x1="${gl.x1.toFixed(1)}" y1="${gl.y1.toFixed(
+          1
+        )}" x2="${gl.x2.toFixed(1)}" y2="${gl.y2.toFixed(
+          1
+        )}" stroke="#0ea5e9" stroke-width="7" stroke-linecap="round" opacity="0.28" />
+            <line x1="${gl.x1.toFixed(1)}" y1="${gl.y1.toFixed(
+          1
+        )}" x2="${gl.x2.toFixed(1)}" y2="${gl.y2.toFixed(
+          1
+        )}" stroke="#2563eb" stroke-width="3.2" stroke-linecap="round" />
+          </g>
+        `;
+      }
 
       html += `
         <g pointer-events="none">
@@ -2454,18 +2811,15 @@ canvasWrapper.addEventListener("pointerdown", (e) => {
     const table = state.tables.find((t) => t.id === id);
     if (table) {
       state.selectedId = id;
-      const members = getGroupMembers(table);
       dragState = {
         type: "move",
         pointerId: e.pointerId,
         table,
         startPtX: pt.x,
         startPtY: pt.y,
-        memberStarts: members.map((m) => ({
-          table: m,
-          startX: m.x,
-          startY: m.y
-        }))
+        startX: table.x,
+        startY: table.y,
+        startRot: table.rotation || 0
       };
       canvasWrapper.setPointerCapture(e.pointerId);
       renderAll();
@@ -2515,16 +2869,46 @@ canvasWrapper.addEventListener("pointermove", (e) => {
   if (dragState.type === "move") {
     const dx = pt.x - dragState.startPtX;
     const dy = pt.y - dragState.startPtY;
-    for (const item of dragState.memberStarts) {
-      item.table.x = Math.max(
-        25,
-        Math.min(PLAN_WIDTH_PX - 25, item.startX + dx)
+    const rawX = Math.max(
+      25,
+      Math.min(PLAN_WIDTH_PX - 25, dragState.startX + dx)
+    );
+    const rawY = Math.max(
+      25,
+      Math.min(PLAN_HEIGHT_PX - 25, dragState.startY + dy)
+    );
+    const movingTable = dragState.table;
+
+    if (getCatalogSpec(movingTable.typeId).shape === "rect") {
+      const magSnap = findBestMagneticSnap(
+        movingTable,
+        rawX,
+        rawY,
+        SNAP_THRESHOLD_PX
       );
-      item.table.y = Math.max(
-        25,
-        Math.min(PLAN_HEIGHT_PX - 25, item.startY + dy)
-      );
+      if (magSnap && magSnap.canSnap) {
+        movingTable.x = magSnap.newPosition.x;
+        movingTable.y = magSnap.newPosition.y;
+        movingTable.rotation = magSnap.newOrientation;
+        movingTable.fusedTo = {
+          anchorId: magSnap.anchorTable.id,
+          sideKey: magSnap.sideKey,
+          targetSide: magSnap.targetSide,
+          tangentMode: magSnap.alignmentMode
+        };
+        state.activeSnapPreview = magSnap;
+      } else {
+        movingTable.x = rawX;
+        movingTable.y = rawY;
+        state.activeSnapPreview = null;
+      }
+      syncRectTableGroupsFromGeometry();
+    } else {
+      movingTable.x = rawX;
+      movingTable.y = rawY;
+      state.activeSnapPreview = null;
     }
+
     renderAll();
   } else if (dragState.type === "rotate") {
     const dx = pt.x - dragState.table.x;
@@ -2535,6 +2919,7 @@ canvasWrapper.addEventListener("pointermove", (e) => {
     if (Math.abs(deg - snap15) < 3) deg = snap15 % 180;
     dragState.table.rotation = deg;
     reSnapFusedTableAfterRotation(dragState.table);
+    syncRectTableGroupsFromGeometry();
     renderAll();
   } else if (dragState.type === "pan") {
     const dx = e.clientX - dragState.startX;
@@ -2560,9 +2945,13 @@ function handlePointerUpOrCancel(e) {
     if (dragState.type === "pan" && !dragState.moved) {
       state.selectedId = null;
       state.rulerLine = null;
+      state.activeSnapPreview = null;
       renderAll();
     } else if (dragState.type === "move" || dragState.type === "rotate") {
+      state.activeSnapPreview = null;
+      syncRectTableGroupsFromGeometry();
       saveToLocalStorage();
+      renderAll();
     }
     dragState = null;
   }
